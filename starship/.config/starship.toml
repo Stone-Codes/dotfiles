@@ -1,0 +1,43 @@
+# Always display username
+[username]
+# The format for how the username is displayed in the prompt
+format = " via [$user](bold blue) "
+# To show the username at all times, set `show_always` to true
+show_always = true
+
+# Always display time
+[time]
+# Display the time at all times
+disabled = true
+# Custom format for the time
+format = "at [🕒 $time](bold green) "
+# You can customize the time format string according to your preference
+time_format = "%T"
+
+
+# Language/tool-specific settings
+[golang]
+symbol = "🐹 "
+style = "bold cyan"
+format = "via [$symbol$version](bold cyan) "
+
+[python]
+symbol = "🐍 "
+style = "bold green"
+format = "via [$symbol$version](bold green) "
+
+[git_branch]
+symbol = " "
+style = "bold purple"
+#
+# [git_status]
+# conflicted = "⚔️ "
+# ahead = "↑"
+# behind = "↓"
+# diverged = "🔀"
+# untracked = "🟡"
+# stashed = "📦"
+# modified = "📝"
+# staged = "🚀"
+# renamed = "👑"
+# deleted = "🗑️ "
