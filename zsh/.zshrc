@@ -34,3 +34,11 @@ export PATH=$PATH:/usr/local/go/bin
 export PATH=$PATH:$GOPATH/bin
 eval "$(starship init zsh)"
 eval "$(zoxide init --cmd cd zsh)"
+
+# The next line updates PATH for the Google Cloud SDK.
+if [ -f '/Users/adminfd/Downloads/google-cloud-sdk/path.zsh.inc' ]; then . '/Users/adminfd/Downloads/google-cloud-sdk/path.zsh.inc'; fi
+
+# The next line enables shell command completion for gcloud.
+if [ -f '/Users/adminfd/Downloads/google-cloud-sdk/completion.zsh.inc' ]; then . '/Users/adminfd/Downloads/google-cloud-sdk/completion.zsh.inc'; fi
+
+alias air='$(go env GOPATH)/bin/air'
