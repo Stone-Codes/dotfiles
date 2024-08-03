@@ -1,4 +1,5 @@
 local wezterm = require 'wezterm'
+local act = wezterm.action
 
 local home = os.getenv("HOME")
 
@@ -23,5 +24,10 @@ config.window_background_image_hsb = {
 
   -- You can adjust the saturation also.
   saturation = 1.0,
+}
+
+config.keys = {
+  -- paste from the clipboard
+  { key = 'V', mods = 'CTRL', action = act.PasteFrom 'Clipboard' },
 }
 return config

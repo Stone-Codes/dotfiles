@@ -42,3 +42,4 @@ if [ -f '/Users/adminfd/Downloads/google-cloud-sdk/path.zsh.inc' ]; then . '/Use
 if [ -f '/Users/adminfd/Downloads/google-cloud-sdk/completion.zsh.inc' ]; then . '/Users/adminfd/Downloads/google-cloud-sdk/completion.zsh.inc'; fi
 
 alias air='$(go env GOPATH)/bin/air'
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
