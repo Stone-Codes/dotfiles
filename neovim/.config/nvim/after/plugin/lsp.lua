@@ -10,7 +10,7 @@ require('mason').setup({})
 require('mason-lspconfig').setup({
   -- Replace the language servers listed here
   -- with the ones you want to install
-  ensure_installed = { 'efm', 'tsserver', 'lua_ls', 'svelte', 'tailwindcss', 'gopls', 'templ', 'pyright', 'jsonls' },
+  ensure_installed = { 'efm', 'lua_ls', 'svelte', 'tailwindcss', 'gopls', 'templ', 'pyright', 'jsonls', 'ruff' },
   -- handlers = {
   --   lsp.default_setup,
   -- },
@@ -32,8 +32,39 @@ require("mason-lspconfig").setup_handlers {
         unknownAtRules = "ignore",
       },
     }
-  end
-
+  end,
+  ["svelte"] = function()
+    require("lspconfig").svelte.setup {
+      on_attach = function(client)
+        vim.api.nvim_create_autocmd("BufWritePost", {
+          pattern = { "*.js", "*.ts" },
+          callback = function(ctx)
+            client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.file })
+          end,
+        })
+      end }
+  end,
+  ["ruff"] = function()
+    require("lspconfig").ruff.setup {
+      on_attach = function(client)
+        client.server_capabilities.hoverProvider = false
+      end
+    }
+  end,
+  ["pyright"] = function()
+    require("lspconfig").pyright.setup {
+      settings = {
+        pyright = {
+          disableOrganizeImports = true,
+        },
+        python = {
+          analysis = {
+            ignore = { "*" },
+          },
+        },
+      }
+    }
+  end,
 }
 
 
@@ -63,6 +94,19 @@ local lsp_format_on_save = function(bufnr)
     end,
   })
 end
+
+-- local autocmd_group = vim.api.nvim_create_augroup("Custom auto-commands", { clear = true })
+-- vim.api.nvim_create_autocmd({ "BufWritePost" }, {
+--   pattern = { "*.py" },
+--   desc = "Auto-format Python files after saving",
+--   callback = function()
+--     local fileName = vim.api.nvim_buf_get_name(0)
+--     vim.cmd(":silent !black --preview -q " .. fileName)
+--     vim.cmd(":silent !isort --profile black --float-to-top -q " .. fileName)
+--     vim.cmd(":silent !docformatter --in-place --black " .. fileName)
+--   end,
+--   group = autocmd_group,
+-- })
 
 
 local cmp = require('cmp')

@@ -41,13 +41,19 @@ return {
     },
     lazy = false,
   },
-  { 'github/copilot.vim' },
+  -- { 'github/copilot.vim' },
   {
     "kdheepak/lazygit.nvim",
     -- optional for floating window border decoration
     dependencies = {
       "nvim-lua/plenary.nvim",
     },
+  },
+  {
+    "iamcco/markdown-preview.nvim",
+    cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
+    ft = { "markdown" },
+    build = function() vim.fn["mkdp#util#install"]() end,
   },
   -- {
   --   "nvim-tree/nvim-tree.lua",
@@ -60,4 +66,15 @@ return {
   --     require("nvim-tree").setup {}
   --   end,
   -- },
+  {
+    "Exafunction/codeium.vim",
+    enabled = true,
+    version = "1.8.37",
+    event = "BufEnter",
+    config = function()
+      vim.keymap.set("i", "<C-g>", function()
+        return vim.fn["codeium#Accept"]()
+      end, { expr = true, silent = true })
+    end
+  },
 }
