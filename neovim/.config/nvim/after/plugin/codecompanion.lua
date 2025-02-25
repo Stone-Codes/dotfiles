@@ -1,13 +1,28 @@
 -- Place this in: .config/nvim/after/plugin/codecompanion.lua
 
 require("codecompanion").setup({
-  adapters = {
-    -- Configure Copilot with Claude
-    copilot = {
-      enable = true,
-      model = "claude",        -- Use Claude model
-      provider = "anthropic",  -- Anthropic is the provider for Claude
-      accept_keymap = "<C-g>", -- Same keybind as your previous Codeium config
+  strategies = {
+    chat = {
+      adapter = "copilot",
+    },
+    inline = {
+      adapter = "copilot",
+    },
+    agent = {
+      adapter = "copilot",
+    },
+  },
+
+  display = {
+    action_palette = {
+      width = 95,
+      height = 10,
+      prompt = "Prompt ",                   -- Prompt used for interactive LLM calls
+      provider = "telescope",               -- default|telescope|mini_pick
+      opts = {
+        show_default_actions = true,        -- Show the default actions in the action palette?
+        show_default_prompt_library = true, -- Show the default prompt library in the action palette?
+      },
     },
   },
 
@@ -66,8 +81,8 @@ require("codecompanion").setup({
 })
 
 -- Define useful keymaps for codecompanion
-vim.keymap.set("n", "<leader>cc", ":CodeCompanionChat<CR>", { desc = "Open Code Companion Chat" })
+vim.keymap.set("n", "<leader>ccc", ":CodeCompanionChat<CR>", { desc = "Open Code Companion Chat" })
 vim.keymap.set("n", "<leader>ct", ":CodeCompanionToggle<CR>", { desc = "Toggle Code Companion" })
-vim.keymap.set("v", "<leader>ce", ":CodeCompanionExplain<CR>", { desc = "Explain selected code" })
-vim.keymap.set("v", "<leader>cr", ":CodeCompanionRefactor<CR>", { desc = "Refactor selected code" })
-vim.keymap.set("v", "<leader>cd", ":CodeCompanionDocs<CR>", { desc = "Generate docs for selection" })
+vim.keymap.set("v", "<leader>ccl", ":CodeCompanion<CR>", { desc = "Refactor selected code" })
+-- vim.keymap.set("v", "<leader>ce", ":CodeCompanionExplain<CR>", { desc = "Explain selected code" })
+-- vim.keymap.set("v", "<leader>cd", ":CodeCompanionDocs<CR>", { desc = "Generate docs for selection" })

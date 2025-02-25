@@ -66,23 +66,20 @@ return {
   --   end,
   -- },
   -- Removed Codeium and replaced with codecompanion.nvim
-  {
-    'github/copilot.vim',
-    lazy = false,
-    priority = 900, -- Load early
-  },
-
+  -- {
+  --   'github/copilot.vim',
+  --   lazy = false,
+  --   priority = 900, -- Load early
+  -- },
+  --
   -- Configure codecompanion with minimal dependencies
   {
     "olimorris/codecompanion.nvim",
+    config = true,
     dependencies = {
       "nvim-lua/plenary.nvim",
-      "MunifTanjim/nui.nvim",
+      "nvim-treesitter/nvim-treesitter",
     },
-    -- Force latest version
-    commit = nil, -- Use nil to get the latest
-    version = nil,
-
-    branch = "main",
   },
+
 }
