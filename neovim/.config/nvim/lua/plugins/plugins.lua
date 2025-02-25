@@ -41,7 +41,6 @@ return {
     },
     lazy = false,
   },
-  -- { 'github/copilot.vim' },
   {
     "kdheepak/lazygit.nvim",
     -- optional for floating window border decoration
@@ -66,15 +65,24 @@ return {
   --     require("nvim-tree").setup {}
   --   end,
   -- },
+  -- Removed Codeium and replaced with codecompanion.nvim
   {
-    "Exafunction/codeium.vim",
-    enabled = true,
-    version = "1.8.37",
-    event = "BufEnter",
-    config = function()
-      vim.keymap.set("i", "<C-g>", function()
-        return vim.fn["codeium#Accept"]()
-      end, { expr = true, silent = true })
-    end
+    'github/copilot.vim',
+    lazy = false,
+    priority = 900, -- Load early
+  },
+
+  -- Configure codecompanion with minimal dependencies
+  {
+    "olimorris/codecompanion.nvim",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "MunifTanjim/nui.nvim",
+    },
+    -- Force latest version
+    commit = nil, -- Use nil to get the latest
+    version = nil,
+
+    branch = "main",
   },
 }
