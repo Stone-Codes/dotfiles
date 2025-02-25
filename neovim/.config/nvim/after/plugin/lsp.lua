@@ -1,30 +1,87 @@
+-- Updated lsp.lua with better Python support
 local lsp = require("lsp-zero")
 
 lsp.preset("recommended")
 
+-- Mason setup for package management
+require('mason').setup({})
+require('mason-lspconfig').setup({
+  ensure_installed = { 'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss', 'gopls', 'templ', 'jsonls' },
+})
+
+-- Configure EFM for general formatting support
 require('lspconfig').efm.setup {
   root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml"),
 }
 
-require('mason').setup({})
-require('mason-lspconfig').setup({
-  -- Replace the language servers listed here
-  -- with the ones you want to install
-  ensure_installed = { 'efm', 'lua_ls', 'svelte', 'tailwindcss', 'gopls', 'templ', 'pyright', 'jsonls', 'ruff' },
-  -- handlers = {
-  --   lsp.default_setup,
-  -- },
-})
-
+-- Setup specific LSP handlers
 require("mason-lspconfig").setup_handlers {
-  -- The first entry (without a key) will be the default handler
-  -- and will be called for each installed server that doesn't have
-  -- a dedicated handler.
-  function(server_name) -- default handler (optional)
+  -- Default handler for servers without specific configuration
+  function(server_name)
     require("lspconfig")[server_name].setup {}
   end,
-  -- Next, you can provide a dedicated handler for specific servers.
-  -- For example, a handler override for the `rust_analyzer`:
+
+  -- Python-specific LSP setups
+  ["pyright"] = function()
+    require("lspconfig").pyright.setup {
+      settings = {
+        pyright = {
+          -- Keep organize imports disabled as Ruff will handle this
+          disableOrganizeImports = true,
+        },
+        python = {
+          analysis = {
+            -- Enable type checking
+            typeCheckingMode = "basic", -- Can be "off", "basic", or "strict"
+            autoSearchPaths = true,
+            useLibraryCodeForTypes = true,
+            diagnosticMode = "workspace",
+          },
+        },
+      }
+    }
+  end,
+
+  ["ruff"] = function()
+    require("lspconfig").ruff.setup {
+      -- Enable Ruff to provide hover information for diagnostics
+      on_attach = function(client, bufnr)
+        -- Enable hover now so you get useful information
+        client.server_capabilities.hoverProvider = true
+
+        -- Add specific keybinding for formatting with Ruff
+        vim.keymap.set("n", "<leader>rf", function()
+          vim.cmd("RuffFormat")
+        end, { buffer = bufnr, desc = "Format with Ruff" })
+      end,
+
+      settings = {
+        -- Configure Ruff settings
+        ruff = {
+          format = {
+            -- Automatically format on save
+            enabled = true,
+          },
+          lint = {
+            -- Enable all recommended rules by default
+            run = "onSave",
+            -- You can select specific rule sets to enable/disable
+            -- Select rules that cover flake8, isort, pyupgrade, etc.
+            -- See https://beta.ruff.rs/docs/rules/
+            select = {
+              "E", "F", "I", "W", "UP", "N", "B", "A", "C4", "PT", "RET", "SIM"
+            },
+            -- Rules to explicitly ignore
+            ignore = {},
+          },
+          -- Line length matches your colorcolumn setting
+          lineLenght = 80,
+        }
+      }
+    }
+  end,
+
+  -- Keep your other server configurations
   ["tailwindcss"] = function()
     require("lspconfig").tailwindcss.setup {
       root_dir = require("lspconfig").util.root_pattern("tailwind.config.js"),
@@ -33,6 +90,7 @@ require("mason-lspconfig").setup_handlers {
       },
     }
   end,
+
   ["svelte"] = function()
     require("lspconfig").svelte.setup {
       on_attach = function(client)
@@ -42,47 +100,12 @@ require("mason-lspconfig").setup_handlers {
             client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.file })
           end,
         })
-      end }
-  end,
-  ["ruff"] = function()
-    require("lspconfig").ruff.setup {
-      on_attach = function(client)
-        client.server_capabilities.hoverProvider = false
       end
-    }
-  end,
-  ["pyright"] = function()
-    require("lspconfig").pyright.setup {
-      settings = {
-        pyright = {
-          disableOrganizeImports = true,
-        },
-        python = {
-          analysis = {
-            ignore = { "*" },
-          },
-        },
-      }
     }
   end,
 }
 
-
--- require("mason-lspconfig").setup_handlers {
---   -- The first entry (without a key) will be the default handler
---   -- and will be called for each installed server that doesn't have
---   -- a dedicated handler.
---   function(server_name)        -- default handler (optional)
---     require("lspconfig")[server_name].setup {}
---   end,
---   -- Next, you can provide a dedicated handler for specific servers.
---   -- For example, a handler override for the `rust_analyzer`:
---   ["eslint"] = function()
---     require("eslint").setup({
---     })
---   end
--- }
-
+-- Format on save setup
 local augroup = vim.api.nvim_create_augroup('LspFormatting', {})
 local lsp_format_on_save = function(bufnr)
   vim.api.nvim_clear_autocmds({ group = augroup, buffer = bufnr })
@@ -90,25 +113,24 @@ local lsp_format_on_save = function(bufnr)
     group = augroup,
     buffer = bufnr,
     callback = function()
-      vim.lsp.buf.format()
+      -- Format the current buffer using the attached LSP
+      vim.lsp.buf.format({
+        -- Filter formatting to only use certain servers
+        filter = function(client)
+          -- For Python files, prefer Ruff for formatting
+          if vim.bo.filetype == "python" then
+            return client.name == "ruff"
+          end
+          -- For other files, use any formatter
+          return true
+        end,
+        bufnr = bufnr,
+      })
     end,
   })
 end
 
--- local autocmd_group = vim.api.nvim_create_augroup("Custom auto-commands", { clear = true })
--- vim.api.nvim_create_autocmd({ "BufWritePost" }, {
---   pattern = { "*.py" },
---   desc = "Auto-format Python files after saving",
---   callback = function()
---     local fileName = vim.api.nvim_buf_get_name(0)
---     vim.cmd(":silent !black --preview -q " .. fileName)
---     vim.cmd(":silent !isort --profile black --float-to-top -q " .. fileName)
---     vim.cmd(":silent !docformatter --in-place --black " .. fileName)
---   end,
---   group = autocmd_group,
--- })
-
-
+-- Setup autocompletion
 local cmp = require('cmp')
 local cmp_action = require('lsp-zero').cmp_action()
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
@@ -125,14 +147,11 @@ cmp.setup({
   })
 })
 
-
 cmp.setup({
   sources = {
     { name = 'nvim_lsp' }
   }
 })
-
-
 
 lsp.set_preferences({
   suggest_lsp_servers = false,
@@ -147,12 +166,17 @@ lsp.set_preferences({
 lsp.on_attach(function(client, bufnr)
   local opts = { buffer = bufnr, remap = false }
 
+  -- Enable document formatting if the client supports it
   client.server_capabilities.documentFormattingProvider = true
 
-
+  -- Setup format on save
   lsp_format_on_save(bufnr)
 
+  -- LSP keybindings
   vim.keymap.set("n", "gd", function() vim.lsp.buf.definition() end, opts)
+  vim.keymap.set("n", "gD", function() vim.lsp.buf.declaration() end, opts)
+  vim.keymap.set("n", "gt", function() vim.lsp.buf.type_definition() end, opts)
+  vim.keymap.set("n", "gi", function() vim.lsp.buf.implementation() end, opts)
   vim.keymap.set("n", "K", function() vim.lsp.buf.hover() end, opts)
   vim.keymap.set("n", "<leader>vws", function() vim.lsp.buf.workspace_symbol() end, opts)
   vim.keymap.set("n", "<leader>vd", function() vim.diagnostic.open_float() end, opts)
@@ -166,6 +190,11 @@ end)
 
 lsp.setup()
 
+-- Configure diagnostics display
 vim.diagnostic.config({
-  virtual_text = true
+  virtual_text = true,
+  signs = true,
+  underline = true,
+  update_in_insert = false,
+  severity_sort = true,
 })
