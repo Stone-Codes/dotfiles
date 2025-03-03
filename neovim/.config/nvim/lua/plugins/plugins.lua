@@ -66,11 +66,11 @@ return {
   --   end,
   -- },
   -- Removed Codeium and replaced with codecompanion.nvim
-  -- {
-  --   'github/copilot.vim',
-  --   lazy = false,
-  --   priority = 900, -- Load early
-  -- },
+  {
+    'github/copilot.vim',
+    lazy = false,
+    priority = 900, -- Load early
+  },
   --
   -- Configure codecompanion with minimal dependencies
   {
