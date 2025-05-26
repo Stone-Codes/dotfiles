@@ -1,4 +1,4 @@
--- Updated lsp.lua with better Python support
+-- Updated lsp.lua with better Python and Svelte support
 local lsp = require("lsp-zero")
 
 lsp.preset("recommended")
@@ -6,7 +6,10 @@ lsp.preset("recommended")
 -- Mason setup for package management
 require('mason').setup({})
 require('mason-lspconfig').setup({
-  ensure_installed = { 'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss', 'gopls', 'templ', 'jsonls' },
+  ensure_installed = {
+    'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss',
+    'gopls', 'templ', 'jsonls', 'eslint', 'tsserver'
+  },
 })
 
 -- Configure EFM for general formatting support
@@ -81,6 +84,43 @@ require("mason-lspconfig").setup_handlers {
     }
   end,
 
+  -- Enhanced Svelte Configuration
+  ["svelte"] = function()
+    require("lspconfig").svelte.setup {
+      on_attach = function(client, bufnr)
+        -- Keep existing JS/TS file change notification
+        vim.api.nvim_create_autocmd("BufWritePost", {
+          pattern = { "*.js", "*.ts" },
+          callback = function(ctx)
+            client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.file })
+          end,
+        })
+
+        -- Enhance completions for HTML parts
+        client.server_capabilities.completionProvider = {
+          triggerCharacters = {
+            ".", ":", "<", "\"", "'", "/", "@", "*",
+            "#", "$", "+", "^", "(", "[", "-", "_"
+          }
+        }
+
+        -- Optional: Add keybinding for manually triggering completion
+        vim.keymap.set("i", "<C-Space>", function()
+          vim.lsp.buf.completion()
+        end, { buffer = bufnr, noremap = true, silent = true })
+      end,
+      settings = {
+        svelte = {
+          plugin = {
+            html = { completions = { enable = true, emmet = true } },
+            svelte = { completions = { enable = true } },
+            css = { completions = { enable = true, emmet = true } }
+          }
+        }
+      }
+    }
+  end,
+
   -- Keep your other server configurations
   ["tailwindcss"] = function()
     require("lspconfig").tailwindcss.setup {
@@ -88,19 +128,6 @@ require("mason-lspconfig").setup_handlers {
       lint = {
         unknownAtRules = "ignore",
       },
-    }
-  end,
-
-  ["svelte"] = function()
-    require("lspconfig").svelte.setup {
-      on_attach = function(client)
-        vim.api.nvim_create_autocmd("BufWritePost", {
-          pattern = { "*.js", "*.ts" },
-          callback = function(ctx)
-            client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.file })
-          end,
-        })
-      end
     }
   end,
 }
@@ -134,10 +161,18 @@ end
 local cmp = require('cmp')
 local cmp_action = require('lsp-zero').cmp_action()
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
+
+-- Consolidated CMP setup (fixing the issue of two separate setups)
 cmp.setup({
   window = {
     completion = cmp.config.window.bordered(),
     documentation = cmp.config.window.bordered()
+  },
+  sources = {
+    { name = 'nvim_lsp' },
+    { name = 'luasnip' }, -- Add snippet support (if you have luasnip installed)
+    { name = 'buffer' },  -- Add buffer source for more completions
+    { name = 'path' }     -- Add path source for file path completions
   },
   mapping = cmp.mapping.preset.insert({
     ['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
@@ -145,12 +180,6 @@ cmp.setup({
     ['<C-y>'] = cmp.mapping.confirm({ select = true }),
     ["<C-Space>"] = cmp.mapping.complete(),
   })
-})
-
-cmp.setup({
-  sources = {
-    { name = 'nvim_lsp' }
-  }
 })
 
 lsp.set_preferences({

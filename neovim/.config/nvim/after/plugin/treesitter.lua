@@ -1,6 +1,10 @@
 require 'nvim-treesitter.configs'.setup {
   -- A list of parser names, or "all" (the five listed parsers should always be installed)
-  ensure_installed = { "c", "lua", "vim", "vimdoc", "query", "javascript", "typescript", "go", "templ", 'python' },
+  ensure_installed = {
+    "c", "lua", "vim", "vimdoc", "query",
+    "javascript", "typescript", "go", "templ", "python",
+    "svelte", "html", "css" -- Added svelte, html, and css
+  },
 
   -- Install parsers synchronously (only applied to `ensure_installed`)
   sync_install = false,
@@ -11,7 +15,6 @@ require 'nvim-treesitter.configs'.setup {
 
   highlight = {
     enable = true,
-
     additional_vim_regex_highlighting = false,
   },
 }
@@ -19,5 +22,6 @@ require 'nvim-treesitter.configs'.setup {
 vim.filetype.add({
   extension = {
     templ = "templ",
+    svelte = "svelte", -- Ensure svelte files are recognized
   },
 })
