@@ -8,7 +8,7 @@ require('mason').setup({})
 require('mason-lspconfig').setup({
   ensure_installed = {
     'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss',
-    'gopls', 'templ', 'jsonls', 'eslint', 'tsserver'
+    'gopls', 'templ', 'jsonls', 'eslint'
   },
 })
 

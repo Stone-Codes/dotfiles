@@ -3,7 +3,7 @@ require 'nvim-treesitter.configs'.setup {
   ensure_installed = {
     "c", "lua", "vim", "vimdoc", "query",
     "javascript", "typescript", "go", "templ", "python",
-    "svelte", "html", "css" -- Added svelte, html, and css
+    "svelte", "html", "css", "tsx", "json" -- Added svelte, html, and css
   },
 
   -- Install parsers synchronously (only applied to `ensure_installed`)
@@ -23,5 +23,6 @@ vim.filetype.add({
   extension = {
     templ = "templ",
     svelte = "svelte", -- Ensure svelte files are recognized
+    tsx = "tsx",       -- Ensure tsx files are recognized
   },
 })
