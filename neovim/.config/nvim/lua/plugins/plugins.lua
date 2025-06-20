@@ -65,21 +65,12 @@ return {
   --     require("nvim-tree").setup {}
   --   end,
   -- },
-  -- Removed Codeium and replaced with codecompanion.nvim
-  {
-    'github/copilot.vim',
-    lazy = false,
-    priority = 900, -- Load early
-  },
-  --
-  -- Configure codecompanion with minimal dependencies
-  {
-    "olimorris/codecompanion.nvim",
-    config = true,
-    dependencies = {
-      "nvim-lua/plenary.nvim",
-      "nvim-treesitter/nvim-treesitter",
-    },
-  },
 
+  -- Supermaven AI completion
+  {
+    "supermaven-inc/supermaven-nvim",
+    config = function()
+      require("supermaven-nvim").setup({})
+    end,
+  },
 }

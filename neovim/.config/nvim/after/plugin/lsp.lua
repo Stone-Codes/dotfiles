@@ -10,15 +10,7 @@ require('mason-lspconfig').setup({
     'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss',
     'gopls', 'templ', 'jsonls', 'eslint'
   },
-})
-
--- Configure EFM for general formatting support
-require('lspconfig').efm.setup {
-  root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml"),
-}
-
--- Setup specific LSP handlers
-require("mason-lspconfig").setup_handlers {
+  handlers = {
   -- Default handler for servers without specific configuration
   function(server_name)
     require("lspconfig")[server_name].setup {}
@@ -130,6 +122,12 @@ require("mason-lspconfig").setup_handlers {
       },
     }
   end,
+  }
+})
+
+-- Configure EFM for general formatting support
+require('lspconfig').efm.setup {
+  root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml"),
 }
 
 -- Format on save setup
@@ -170,6 +168,7 @@ cmp.setup({
   },
   sources = {
     { name = 'nvim_lsp' },
+    { name = 'supermaven' }, -- Add Supermaven source
     { name = 'luasnip' }, -- Add snippet support (if you have luasnip installed)
     { name = 'buffer' },  -- Add buffer source for more completions
     { name = 'path' }     -- Add path source for file path completions
