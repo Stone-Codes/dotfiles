@@ -3,6 +3,22 @@ local lsp = require("lsp-zero")
 
 lsp.preset("recommended")
 
+-- Check Neovim version for API compatibility
+local nvim_version = vim.version()
+local use_new_api = nvim_version.major > 0 or (nvim_version.major == 0 and nvim_version.minor >= 11)
+
+-- Helper function to setup LSP servers compatibly
+local function setup_lsp_server(server_name, config)
+  if use_new_api then
+    -- Neovim 0.11+ uses vim.lsp.config
+    vim.lsp.config(server_name, config)
+  else
+    -- Older versions use lspconfig
+    local lspconfig = require("lspconfig")
+    lspconfig[server_name].setup(config)
+  end
+end
+
 -- Mason setup for package management
 require('mason').setup({})
 require('mason-lspconfig').setup({
@@ -13,12 +29,12 @@ require('mason-lspconfig').setup({
   handlers = {
     -- Default handler for servers without specific configuration
     function(server_name)
-      require("lspconfig")[server_name].setup {}
+      setup_lsp_server(server_name, {})
     end,
 
     -- Python-specific LSP setups
     ["pyright"] = function()
-      require("lspconfig").pyright.setup {
+      setup_lsp_server("pyright", {
         settings = {
           pyright = {
             -- Keep organize imports disabled as Ruff will handle this
@@ -34,11 +50,11 @@ require('mason-lspconfig').setup({
             },
           },
         }
-      }
+      })
     end,
 
     ["ruff"] = function()
-      require("lspconfig").ruff.setup {
+      setup_lsp_server("ruff", {
         -- Enable Ruff to provide hover information for diagnostics
         on_attach = function(client, bufnr)
           -- Enable hover now so you get useful information
@@ -73,12 +89,12 @@ require('mason-lspconfig').setup({
             lineLenght = 80,
           }
         }
-      }
+      })
     end,
 
     -- Enhanced Svelte Configuration
     ["svelte"] = function()
-      require("lspconfig").svelte.setup {
+      setup_lsp_server("svelte", {
         on_attach = function(client, bufnr)
           -- Keep existing JS/TS file change notification
           vim.api.nvim_create_autocmd("BufWritePost", {
@@ -110,25 +126,43 @@ require('mason-lspconfig').setup({
             }
           }
         }
-      }
+      })
     end,
 
     -- Keep your other server configurations
     ["tailwindcss"] = function()
-      require("lspconfig").tailwindcss.setup {
-        root_dir = require("lspconfig").util.root_pattern("tailwind.config.js"),
+      local tailwind_config = {
         lint = {
           unknownAtRules = "ignore",
         },
       }
+      
+      -- Set root_dir based on API version
+      if use_new_api then
+        tailwind_config.root_dir = function(fname)
+          return vim.fs.root(fname, "tailwind.config.js")
+        end
+      else
+        tailwind_config.root_dir = require("lspconfig").util.root_pattern("tailwind.config.js")
+      end
+      
+      setup_lsp_server("tailwindcss", tailwind_config)
     end,
   }
 })
 
 -- Configure EFM for general formatting support
-require('lspconfig').efm.setup {
-  root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml"),
-}
+local efm_config = {}
+
+if use_new_api then
+  efm_config.root_dir = function(fname)
+    return vim.fs.root(fname, { ".git", "pnpm-workspace.yml" })
+  end
+else
+  efm_config.root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml")
+end
+
+setup_lsp_server("efm", efm_config)
 
 -- Format on save setup
 local augroup = vim.api.nvim_create_augroup('LspFormatting', {})
