@@ -1,0 +1,10 @@
+{
+  "name": "pi-permissions",
+  "version": "1.0.0",
+  "description": "Simple permission system for Pi coding agent",
+  "main": "index.ts",
+  "dependencies": {},
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

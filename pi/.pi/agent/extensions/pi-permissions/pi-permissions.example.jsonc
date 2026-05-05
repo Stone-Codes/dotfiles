@@ -1,0 +1,32 @@
+{
+  "defaultPolicy": {
+    "tools": "ask",
+    "bash": "ask",
+    "mcp": "ask",
+    "skills": "ask"
+  },
+  "tools": {
+    "read": "allow",
+    "grep": "allow",
+    "find": "allow",
+    "ls": "allow",
+    "write": "ask",
+    "edit": "ask"
+  },
+  "bash": {
+    "git status": "allow",
+    "git diff *": "allow",
+    "git log *": "allow",
+    "git *": "ask",
+    "rm -rf *": "deny"
+  },
+  "mcp": {
+    "mcp_status": "allow",
+    "mcp_list": "allow",
+    "myServer:*": "ask",
+    "dangerousServer": "deny"
+  },
+  "skills": {
+    "*": "ask"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "plan-mode-advanced",
+  "version": "1.0.0",
+  "description": "Advanced plan mode with sub-agents and interactive approval",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

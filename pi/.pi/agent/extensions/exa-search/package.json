@@ -1,0 +1,11 @@
+{
+  "name": "pi-exa-search",
+  "version": "2.0.0",
+  "description": "Web search extension for pi using Exa AI — semantic search, AI answers, and content retrieval",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {}
+}
