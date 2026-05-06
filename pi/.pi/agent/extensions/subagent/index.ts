@@ -1,15 +1,21 @@
 /**
- * Subagent Tool - Delegate tasks to specialized agents
+ * Refined Subagent Tool - Delegate tasks to specialized agents with dynamic creation
  *
- * Spawns a separate `pi` process for each subagent invocation,
- * giving it an isolated context window.
+ * Spawns a separate `pi` process for each subagent invocation, giving it an isolated
+ * context window. Supports predefined agents from ~/.pi/agent/agents/ and .pi/agents/,
+ * as well as dynamic on-the-fly agents with custom prompts.
  *
- * Supports three modes:
- *   - Single: { agent: "name", task: "..." }
- *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
- *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
+ * Modes:
+ *   - Single: { agent?: "name", task: "...", prompt?: "...", ... }
+ *   - Parallel: { tasks: [{ agent?, task, prompt?, ... }, ...] }
+ *   - Chain: { chain: [{ agent?, task, prompt?, ... }, ...] }
  *
- * Uses JSON mode to capture structured output from subagents.
+ * Key refinements over the original:
+ *   - Dynamic agents: spawn focused subagents with inline `prompt` without predefined .md files
+ *   - Context inheritance: `inheritContext` forwards recent parent session messages
+ *   - Iteration budgets: `maxTurns` limits subagent assistant turns
+ *   - Per-task overrides: `model`, `tools`, `outputFormat` per invocation
+ *   - Rich delegation guidance: tool description includes agent catalog and WHEN to delegate
  */
 
 import { spawn } from "node:child_process";
@@ -22,11 +28,12 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
+const INHERIT_CONTEXT_MESSAGES = 6;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -110,7 +117,11 @@ function formatToolCall(
 		case "find": {
 			const pattern = (args.pattern || "*") as string;
 			const rawPath = (args.path || ".") as string;
-			return themeFg("muted", "find ") + themeFg("accent", pattern) + themeFg("dim", ` in ${shortenPath(rawPath)}`);
+			return (
+				themeFg("muted", "find ") +
+				themeFg("accent", pattern) +
+				themeFg("dim", ` in ${shortenPath(rawPath)}`)
+			);
 		}
 		case "grep": {
 			const pattern = (args.pattern || "") as string;
@@ -141,7 +152,7 @@ interface UsageStats {
 
 interface SingleResult {
 	agent: string;
-	agentSource: "user" | "project" | "unknown";
+	agentSource: "user" | "project" | "dynamic" | "unknown";
 	task: string;
 	exitCode: number;
 	messages: Message[];
@@ -151,6 +162,7 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	maxTurnsReached?: boolean;
 }
 
 interface SubagentDetails {
@@ -233,51 +245,163 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+function buildInheritedContext(sessionManager: any): string {
+	try {
+		const entries = sessionManager.getEntries?.() || [];
+		const contextMessages: string[] = [];
+		let count = 0;
+
+		for (let i = entries.length - 1; i >= 0 && count < INHERIT_CONTEXT_MESSAGES; i--) {
+			const entry = entries[i];
+			if (entry.type !== "message") continue;
+			if (entry.message?.role === "user") {
+				const text = entry.message.content
+					?.filter((c: any) => c.type === "text")
+					.map((c: any) => c.text)
+					.join("\n");
+				if (text) {
+					contextMessages.unshift(`User: ${text.slice(0, 800)}`);
+					count++;
+				}
+			} else if (entry.message?.role === "assistant") {
+				const text = entry.message.content
+					?.filter((c: any) => c.type === "text")
+					.map((c: any) => c.text)
+					.join("\n");
+				if (text) {
+					contextMessages.unshift(`Assistant: ${text.slice(0, 800)}`);
+					count++;
+				}
+			}
+		}
+
+		if (contextMessages.length === 0) return "";
+		return "## Context from main session\n\n" + contextMessages.join("\n\n");
+	} catch {
+		return "";
+	}
+}
+
+function buildOutputFormatInstructions(format?: string): string {
+	if (!format) return "";
+	switch (format.toLowerCase()) {
+		case "json":
+			return "\n\n## Output Format\n\nReturn your final response as valid JSON inside a markdown code block.";
+		case "markdown":
+			return "\n\n## Output Format\n\nReturn your final response as well-structured Markdown.";
+		default:
+			return `\n\n## Output Format\n\n${format}`;
+	}
+}
+
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
-async function runSingleAgent(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	step: number | undefined,
-	signal: AbortSignal | undefined,
-	onUpdate: OnUpdateCallback | undefined,
-	makeDetails: (results: SingleResult[]) => SubagentDetails,
-): Promise<SingleResult> {
-	const agent = agents.find((a) => a.name === agentName);
+interface RunSingleAgentOptions {
+	defaultCwd: string;
+	agents: AgentConfig[];
+	agentName?: string;
+	task: string;
+	cwd?: string;
+	step?: number;
+	signal?: AbortSignal;
+	onUpdate?: OnUpdateCallback;
+	makeDetails: (results: SingleResult[]) => SubagentDetails;
+	// Dynamic overrides
+	prompt?: string;
+	tools?: string[];
+	model?: string;
+	maxTurns?: number;
+	inheritContext?: boolean;
+	outputFormat?: string;
+	sessionManager?: any;
+}
 
-	if (!agent) {
+async function runSingleAgent(options: RunSingleAgentOptions): Promise<SingleResult> {
+	const {
+		defaultCwd,
+		agents,
+		agentName,
+		task,
+		cwd,
+		step,
+		signal,
+		onUpdate,
+		makeDetails,
+		prompt: dynamicPrompt,
+		tools: dynamicTools,
+		model: dynamicModel,
+		maxTurns,
+		inheritContext,
+		outputFormat,
+		sessionManager,
+	} = options;
+
+	const predefinedAgent = agentName ? agents.find((a) => a.name === agentName) : undefined;
+	const isDynamic = !predefinedAgent;
+
+	// Resolve agent configuration
+	const resolvedName = predefinedAgent?.name || "dynamic";
+	const resolvedSource: SingleResult["agentSource"] = predefinedAgent?.source || "dynamic";
+	const resolvedModel = dynamicModel || predefinedAgent?.model;
+	const resolvedTools = dynamicTools || predefinedAgent?.tools;
+
+	// Build system prompt
+	let systemPrompt = "";
+	if (predefinedAgent?.systemPrompt) {
+		systemPrompt = predefinedAgent.systemPrompt;
+	}
+	if (dynamicPrompt) {
+		// Dynamic prompt overrides or augments the predefined agent prompt
+		systemPrompt = dynamicPrompt + (systemPrompt ? `\n\n---\n\n${systemPrompt}` : "");
+	}
+
+	// Add inherited context if requested
+	if (inheritContext && sessionManager) {
+		const inherited = buildInheritedContext(sessionManager);
+		if (inherited) {
+			systemPrompt = systemPrompt ? `${systemPrompt}\n\n${inherited}` : inherited;
+		}
+	}
+
+	// Add output format instructions
+	const formatInstructions = buildOutputFormatInstructions(outputFormat);
+	const fullTask = formatInstructions ? `${task}${formatInstructions}` : task;
+
+	if (!systemPrompt && !isDynamic) {
+		// Should not happen, but handle gracefully
+		systemPrompt = "You are a helpful assistant.";
+	}
+
+	if (isDynamic && !dynamicPrompt) {
 		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
 		return {
-			agent: agentName,
+			agent: agentName || "dynamic",
 			agentSource: "unknown",
 			task,
 			exitCode: 1,
 			messages: [],
-			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			stderr: `Unknown agent: "${agentName || ""}" and no dynamic prompt provided. Available agents: ${available}.`,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 			step,
 		};
 	}
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	if (resolvedModel) args.push("--model", resolvedModel);
+	if (resolvedTools && resolvedTools.length > 0) args.push("--tools", resolvedTools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 
 	const currentResult: SingleResult = {
-		agent: agentName,
-		agentSource: agent.source,
+		agent: resolvedName,
+		agentSource: resolvedSource,
 		task,
 		exitCode: 0,
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model: resolvedModel,
 		step,
 	};
 
@@ -291,15 +415,16 @@ async function runSingleAgent(
 	};
 
 	try {
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		if (systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(resolvedName, systemPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
 		}
 
-		args.push(`Task: ${task}`);
+		args.push(`Task: ${fullTask}`);
 		let wasAborted = false;
+		let maxTurnsReached = false;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -325,6 +450,14 @@ async function runSingleAgent(
 
 					if (msg.role === "assistant") {
 						currentResult.usage.turns++;
+
+						// Enforce max turns
+						if (maxTurns && currentResult.usage.turns >= maxTurns) {
+							maxTurnsReached = true;
+							proc.kill("SIGTERM");
+							return;
+						}
+
 						const usage = msg.usage;
 						if (usage) {
 							currentResult.usage.input += usage.input || 0;
@@ -381,7 +514,9 @@ async function runSingleAgent(
 		});
 
 		currentResult.exitCode = exitCode;
+		currentResult.maxTurnsReached = maxTurnsReached;
 		if (wasAborted) throw new Error("Subagent was aborted");
+		if (maxTurnsReached) throw new Error(`Subagent reached maxTurns limit (${maxTurns})`);
 		return currentResult;
 	} finally {
 		if (tmpPromptPath)
@@ -400,15 +535,55 @@ async function runSingleAgent(
 }
 
 const TaskItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
+	agent: Type.Optional(Type.String({ description: "Name of a predefined agent to invoke. Omit to use a dynamic agent with `prompt`." })),
 	task: Type.String({ description: "Task to delegate to the agent" }),
+	prompt: Type.Optional(
+		Type.String({
+			description:
+				"Custom system prompt for this subagent. Use to create focused dynamic agents without predefined .md files. If `agent` is also specified, this is prepended to the agent's system prompt.",
+		}),
+	),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Override tool allowlist for this task" })),
+	model: Type.Optional(Type.String({ description: "Override model for this task (e.g., claude-haiku-4-5)" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	maxTurns: Type.Optional(Type.Number({ description: "Maximum assistant turns before force termination", minimum: 1 })),
+	inheritContext: Type.Optional(
+		Type.Boolean({
+			description: "Forward recent parent session messages as context. Default: false.",
+			default: false,
+		}),
+	),
+	outputFormat: Type.Optional(
+		Type.String({
+			description: "Guide subagent output format: 'json', 'markdown', or custom instructions",
+		}),
+	),
 });
 
 const ChainItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
+	agent: Type.Optional(Type.String({ description: "Name of a predefined agent to invoke. Omit to use a dynamic agent with `prompt`." })),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
+	prompt: Type.Optional(
+		Type.String({
+			description:
+				"Custom system prompt for this subagent. Use to create focused dynamic agents. If `agent` is also specified, this is prepended to the agent's system prompt.",
+		}),
+	),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Override tool allowlist for this step" })),
+	model: Type.Optional(Type.String({ description: "Override model for this step" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	maxTurns: Type.Optional(Type.Number({ description: "Maximum assistant turns before force termination", minimum: 1 })),
+	inheritContext: Type.Optional(
+		Type.Boolean({
+			description: "Forward recent parent session messages as context. Default: false.",
+			default: false,
+		}),
+	),
+	outputFormat: Type.Optional(
+		Type.String({
+			description: "Guide subagent output format: 'json', 'markdown', or custom instructions",
+		}),
+	),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -416,29 +591,92 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 	default: "user",
 });
 
-const SubagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
-	task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
-	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
-	agentScope: Type.Optional(AgentScopeSchema),
-	confirmProjectAgents: Type.Optional(
-		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
-	),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
-});
+function buildToolDescription(agents: AgentConfig[]): string {
+	const agentList = formatAgentList(agents, 12);
+	let desc = [
+		"Delegate tasks to specialized subagents with isolated context windows.",
+		"",
+		"Use this tool when:",
+		"- A task involves searching, reading, or exploring many files (prevents context pollution)",
+		"- Multiple independent subtasks can run in parallel (e.g., review + test + docs)",
+		"- A subtask requires a specialized role or different model (e.g., fast scout, thorough reviewer)",
+		"- The main task is complex enough to benefit from sequential phases with handoffs (chain mode)",
+		"- You want to isolate risky or experimental work from the main conversation",
+		"",
+		"Do NOT use this tool when:",
+		"- The task is a simple single-step edit, read, or bash command",
+		"- You already have all necessary context and the change is straightforward",
+		"- The task requires tight iterative feedback with the user",
+		"",
+		"Modes:",
+		"- single: one agent, one task. Use for focused delegation.",
+		"- parallel: array of tasks run concurrently (max 8 tasks, 4 concurrent). Use for independent subtasks.",
+		"- chain: sequential tasks where output flows via {previous} placeholder. Use for phased workflows.",
+		"",
+		"Dynamic agents:",
+		"Set `prompt` (without `agent`) to spawn a custom subagent on the fly with its own system prompt.",
+		"This is ideal for one-off specialists that don't need a predefined .md file.",
+		"",
+		"Available predefined agents:",
+		agentList.text,
+	];
+	if (agentList.remaining > 0) {
+		desc.push(`... and ${agentList.remaining} more`);
+	}
+	desc.push("");
+	desc.push('Default agent scope is "user" (from ~/.pi/agent/agents). Set agentScope: "both" to include project-local agents in .pi/agents/.');
+	return desc.join("\n");
+}
+
+function buildPromptGuidelines(): string[] {
+	return [
+		"Use the subagent tool proactively when a task would require extensive file exploration, searching, or iterative debugging.",
+		"For parallel mode, ensure tasks are truly independent and specify non-overlapping file scopes.",
+		"For chain mode, use {previous} to pass output between steps. Keep each step focused and verifiable.",
+		"When delegating, write specific, bounded tasks with clear expected outputs. Vague tasks produce vague results.",
+		"Use `prompt` to create dynamic agents for one-off roles (e.g., 'You are a security auditor...').",
+		"Use `inheritContext: true` when the subagent needs awareness of recent main-session discussion.",
+		"Use `maxTurns` to prevent runaway subagents on open-ended tasks (suggested: 5-10 for research, 15-20 for implementation).",
+		"Use `outputFormat: 'json'` when you need structured data back from the subagent.",
+		"Route expensive work to cheaper models via `model` (e.g., claude-haiku-4-5 for searches, sonnet for implementation).",
+		"When a subagent fails, decide whether to retry, adapt the plan, or handle the task directly.",
+	];
+}
 
 export default function (pi: ExtensionAPI) {
+	// Discover agents at load time for the tool description
+	// Note: cwd may change, but this gives the model a useful static catalog
+	const staticAgents = discoverAgents(process.cwd(), "both").agents;
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: [
-			"Delegate tasks to specialized subagents with isolated context.",
-			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-			'Default agent scope is "user" (from ~/.pi/agent/agents).',
-			'To enable project-local agents in .pi/agents, set agentScope: "both" (or "project").',
-		].join(" "),
-		parameters: SubagentParams,
+		description: buildToolDescription(staticAgents),
+		promptSnippet:
+			"Delegate work to isolated subagents: single, parallel, or chain mode. Supports dynamic agents with custom prompts.",
+		promptGuidelines: buildPromptGuidelines(),
+		parameters: Type.Object({
+			agent: Type.Optional(Type.String({ description: "Predefined agent name (for single mode)" })),
+			task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
+			prompt: Type.Optional(
+				Type.String({
+					description:
+						"Custom system prompt for single-mode dynamic agent. If `agent` is also set, prepended to the agent's prompt.",
+				}),
+			),
+			tools: Type.Optional(Type.Array(Type.String(), { description: "Override tool allowlist for single mode" })),
+			model: Type.Optional(Type.String({ description: "Override model for single mode" })),
+			maxTurns: Type.Optional(Type.Number({ description: "Max assistant turns for single mode", minimum: 1 })),
+			inheritContext: Type.Optional(Type.Boolean({ default: false })),
+			outputFormat: Type.Optional(Type.String()),
+			tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
+			chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential chain steps" })),
+			agentScope: Type.Optional(AgentScopeSchema),
+			confirmProjectAgents: Type.Optional(
+				Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
+			),
+			cwd: Type.Optional(Type.String({ description: "Working directory for single mode" })),
+		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
@@ -448,7 +686,7 @@ export default function (pi: ExtensionAPI) {
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.agent && params.task);
+			const hasSingle = Boolean(params.task) && (Boolean(params.agent) || Boolean(params.prompt));
 			const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
 
 			const makeDetails =
@@ -475,8 +713,8 @@ export default function (pi: ExtensionAPI) {
 
 			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
 				const requestedAgentNames = new Set<string>();
-				if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
-				if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+				if (params.chain) for (const step of params.chain) if (step.agent) requestedAgentNames.add(step.agent);
+				if (params.tasks) for (const t of params.tasks) if (t.agent) requestedAgentNames.add(t.agent);
 				if (params.agent) requestedAgentNames.add(params.agent);
 
 				const projectAgentsRequested = Array.from(requestedAgentNames)
@@ -506,10 +744,8 @@ export default function (pi: ExtensionAPI) {
 					const step = params.chain[i];
 					const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
 
-					// Create update callback that includes all previous results
 					const chainUpdate: OnUpdateCallback | undefined = onUpdate
 						? (partial) => {
-								// Combine completed results with current streaming result
 								const currentResult = partial.details?.results[0];
 								if (currentResult) {
 									const allResults = [...results, currentResult];
@@ -518,29 +754,39 @@ export default function (pi: ExtensionAPI) {
 										details: makeDetails("chain")(allResults),
 									});
 								}
-							}
+						  }
 						: undefined;
 
-					const result = await runSingleAgent(
-						ctx.cwd,
+					const result = await runSingleAgent({
+						defaultCwd: ctx.cwd,
 						agents,
-						step.agent,
-						taskWithContext,
-						step.cwd,
-						i + 1,
+						agentName: step.agent,
+						task: taskWithContext,
+						cwd: step.cwd,
+						step: i + 1,
 						signal,
-						chainUpdate,
-						makeDetails("chain"),
-					);
+						onUpdate: chainUpdate,
+						makeDetails: makeDetails("chain"),
+						prompt: step.prompt,
+						tools: step.tools,
+						model: step.model,
+						maxTurns: step.maxTurns,
+						inheritContext: step.inheritContext,
+						outputFormat: step.outputFormat,
+						sessionManager: ctx.sessionManager,
+					});
 					results.push(result);
 
 					const isError =
-						result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+						result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted" || result.maxTurnsReached;
 					if (isError) {
 						const errorMsg =
 							result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+						const reason = result.maxTurnsReached ? `maxTurns (${step.maxTurns}) reached` : errorMsg;
 						return {
-							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
+							content: [
+								{ type: "text", text: `Chain stopped at step ${i + 1} (${result.agent}): ${reason}` },
+							],
 							details: makeDetails("chain")(results),
 							isError: true,
 						};
@@ -565,16 +811,14 @@ export default function (pi: ExtensionAPI) {
 						details: makeDetails("parallel")([]),
 					};
 
-				// Track all results for streaming updates
 				const allResults: SingleResult[] = new Array(params.tasks.length);
 
-				// Initialize placeholder results
 				for (let i = 0; i < params.tasks.length; i++) {
 					allResults[i] = {
-						agent: params.tasks[i].agent,
+						agent: params.tasks[i].agent || "dynamic",
 						agentSource: "unknown",
 						task: params.tasks[i].task,
-						exitCode: -1, // -1 = still running
+						exitCode: -1,
 						messages: [],
 						stderr: "",
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -595,33 +839,39 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-					const result = await runSingleAgent(
-						ctx.cwd,
+					const result = await runSingleAgent({
+						defaultCwd: ctx.cwd,
 						agents,
-						t.agent,
-						t.task,
-						t.cwd,
-						undefined,
+						agentName: t.agent,
+						task: t.task,
+						cwd: t.cwd,
 						signal,
-						// Per-task update callback
-						(partial) => {
+						onUpdate: (partial) => {
 							if (partial.details?.results[0]) {
 								allResults[index] = partial.details.results[0];
 								emitParallelUpdate();
 							}
 						},
-						makeDetails("parallel"),
-					);
+						makeDetails: makeDetails("parallel"),
+						prompt: t.prompt,
+						tools: t.tools,
+						model: t.model,
+						maxTurns: t.maxTurns,
+						inheritContext: t.inheritContext,
+						outputFormat: t.outputFormat,
+						sessionManager: ctx.sessionManager,
+					});
 					allResults[index] = result;
 					emitParallelUpdate();
 					return result;
 				});
 
-				const successCount = results.filter((r) => r.exitCode === 0).length;
+				const successCount = results.filter((r) => r.exitCode === 0 && !r.maxTurnsReached).length;
 				const summaries = results.map((r) => {
 					const output = getFinalOutput(r.messages);
 					const preview = output.slice(0, 100) + (output.length > 100 ? "..." : "");
-					return `[${r.agent}] ${r.exitCode === 0 ? "completed" : "failed"}: ${preview || "(no output)"}`;
+					const status = r.maxTurnsReached ? "max turns" : r.exitCode === 0 ? "completed" : "failed";
+					return `[${r.agent}] ${status}: ${preview || "(no output)"}`;
 				});
 				return {
 					content: [
@@ -634,24 +884,32 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (params.agent && params.task) {
-				const result = await runSingleAgent(
-					ctx.cwd,
+			if (hasSingle) {
+				const result = await runSingleAgent({
+					defaultCwd: ctx.cwd,
 					agents,
-					params.agent,
-					params.task,
-					params.cwd,
-					undefined,
+					agentName: params.agent,
+					task: params.task!,
+					cwd: params.cwd,
 					signal,
 					onUpdate,
-					makeDetails("single"),
-				);
-				const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+					makeDetails: makeDetails("single"),
+					prompt: params.prompt,
+					tools: params.tools,
+					model: params.model,
+					maxTurns: params.maxTurns,
+					inheritContext: params.inheritContext,
+					outputFormat: params.outputFormat,
+					sessionManager: ctx.sessionManager,
+				});
+				const isError =
+					result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted" || result.maxTurnsReached;
 				if (isError) {
 					const errorMsg =
 						result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+					const reason = result.maxTurnsReached ? `maxTurns (${params.maxTurns}) reached` : errorMsg;
 					return {
-						content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
+						content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${reason}` }],
 						details: makeDetails("single")([result]),
 						isError: true,
 					};
@@ -678,15 +936,16 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
 					const step = args.chain[i];
-					// Clean up {previous} placeholder for display
 					const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
 					const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+					const agentLabel = step.agent || (step.prompt ? "dynamic" : "...");
 					text +=
 						"\n  " +
 						theme.fg("muted", `${i + 1}.`) +
 						" " +
-						theme.fg("accent", step.agent) +
+						theme.fg("accent", agentLabel) +
 						theme.fg("dim", ` ${preview}`);
+					if (step.maxTurns) text += theme.fg("warning", ` (max ${step.maxTurns} turns)`);
 				}
 				if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
 				return new Text(text, 0, 0);
@@ -698,17 +957,20 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
 					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+					const agentLabel = t.agent || (t.prompt ? "dynamic" : "...");
+					text += `\n  ${theme.fg("accent", agentLabel)}${theme.fg("dim", ` ${preview}`)}`;
+					if (t.maxTurns) text += theme.fg("warning", ` (max ${t.maxTurns})`);
 				}
 				if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
 				return new Text(text, 0, 0);
 			}
-			const agentName = args.agent || "...";
+			const agentName = args.agent || (args.prompt ? "dynamic" : "...");
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +
 				theme.fg("accent", agentName) +
 				theme.fg("muted", ` [${scope}]`);
+			if (args.maxTurns) text += theme.fg("warning", ` (max ${args.maxTurns} turns)`);
 			text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},
@@ -740,7 +1002,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "single" && details.results.length === 1) {
 				const r = details.results[0];
-				const isError = r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
+				const isError = r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted" || r.maxTurnsReached;
 				const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const displayItems = getDisplayItems(r.messages);
 				const finalOutput = getFinalOutput(r.messages);
@@ -749,6 +1011,7 @@ export default function (pi: ExtensionAPI) {
 					const container = new Container();
 					let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
 					if (isError && r.stopReason) header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
+					if (r.maxTurnsReached) header += ` ${theme.fg("error", "[maxTurns]")}`;
 					container.addChild(new Text(header, 0, 0));
 					if (isError && r.errorMessage)
 						container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -785,6 +1048,7 @@ export default function (pi: ExtensionAPI) {
 
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
 				if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
+				if (r.maxTurnsReached) text += ` ${theme.fg("error", "[maxTurns]")}`;
 				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 				else {
@@ -810,7 +1074,7 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			if (details.mode === "chain") {
-				const successCount = details.results.filter((r) => r.exitCode === 0).length;
+				const successCount = details.results.filter((r) => r.exitCode === 0 && !r.maxTurnsReached).length;
 				const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
 
 				if (expanded) {
@@ -827,7 +1091,7 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					for (const r of details.results) {
-						const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+						const rIcon = r.exitCode === 0 && !r.maxTurnsReached ? theme.fg("success", "✓") : theme.fg("error", "✗");
 						const displayItems = getDisplayItems(r.messages);
 						const finalOutput = getFinalOutput(r.messages);
 
@@ -840,8 +1104,9 @@ export default function (pi: ExtensionAPI) {
 							),
 						);
 						container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
+						if (r.maxTurnsReached)
+							container.addChild(new Text(theme.fg("error", "[maxTurns reached]"), 0, 0));
 
-						// Show tool calls
 						for (const item of displayItems) {
 							if (item.type === "toolCall") {
 								container.addChild(
@@ -854,7 +1119,6 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
-						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
@@ -872,16 +1136,16 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
-				// Collapsed view
 				let text =
 					icon +
 					" " +
 					theme.fg("toolTitle", theme.bold("chain ")) +
 					theme.fg("accent", `${successCount}/${details.results.length} steps`);
 				for (const r of details.results) {
-					const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+					const rIcon = r.exitCode === 0 && !r.maxTurnsReached ? theme.fg("success", "✓") : theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+					if (r.maxTurnsReached) text += ` ${theme.fg("error", "[maxTurns]")}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}
@@ -893,8 +1157,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "parallel") {
 				const running = details.results.filter((r) => r.exitCode === -1).length;
-				const successCount = details.results.filter((r) => r.exitCode === 0).length;
-				const failCount = details.results.filter((r) => r.exitCode > 0).length;
+				const successCount = details.results.filter((r) => r.exitCode === 0 && !r.maxTurnsReached).length;
+				const failCount = details.results.filter((r) => r.exitCode > 0 || r.maxTurnsReached).length;
 				const isRunning = running > 0;
 				const icon = isRunning
 					? theme.fg("warning", "⏳")
@@ -916,7 +1180,12 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					for (const r of details.results) {
-						const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+						const rIcon =
+							r.exitCode === -1
+								? theme.fg("warning", "⏳")
+								: r.exitCode === 0 && !r.maxTurnsReached
+									? theme.fg("success", "✓")
+									: theme.fg("error", "✗");
 						const displayItems = getDisplayItems(r.messages);
 						const finalOutput = getFinalOutput(r.messages);
 
@@ -925,8 +1194,9 @@ export default function (pi: ExtensionAPI) {
 							new Text(`${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}`, 0, 0),
 						);
 						container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
+						if (r.maxTurnsReached)
+							container.addChild(new Text(theme.fg("error", "[maxTurns reached]"), 0, 0));
 
-						// Show tool calls
 						for (const item of displayItems) {
 							if (item.type === "toolCall") {
 								container.addChild(
@@ -939,7 +1209,6 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
-						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
@@ -957,17 +1226,17 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
-				// Collapsed view (or still running)
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
 				for (const r of details.results) {
 					const rIcon =
 						r.exitCode === -1
 							? theme.fg("warning", "⏳")
-							: r.exitCode === 0
+							: r.exitCode === 0 && !r.maxTurnsReached
 								? theme.fg("success", "✓")
 								: theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+					if (r.maxTurnsReached) text += ` ${theme.fg("error", "[maxTurns]")}`;
 					if (displayItems.length === 0)
 						text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, 5)}`;
