@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { BorderedLoader, keyHint } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, keyHint } from "@earendil-works/pi-coding-agent";
 import {
 	allocateImageId,
 	Container,
@@ -12,8 +12,8 @@ import {
 	setCapabilities,
 	Spacer,
 	Text,
-} from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";

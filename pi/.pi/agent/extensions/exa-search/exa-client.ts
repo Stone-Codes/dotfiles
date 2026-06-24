@@ -505,23 +505,21 @@ async function searchWithExaMcp(query: string, options: ExaSearchOptions = {}): 
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-export type ExaSearchResult = SearchResponse | { exhausted: true } | null;
+export type ExaSearchResult = SearchResponse | null;
 
 /**
- * Check if Exa search is available (has API key with budget remaining, or MCP fallback).
+ * Check if Exa search is available. The direct API is optional because the MCP
+ * fallback is available when no API key is configured or the local monthly API
+ * budget has been reached.
  */
 export function isExaAvailable(): boolean {
-	if (getApiKey()) {
-		const usage = readUsage();
-		return usage.count < MONTHLY_LIMIT;
-	}
-	// MCP fallback is always available
 	return true;
 }
 
 /**
- * Search with Exa — uses direct API if key is available, falls back to MCP otherwise.
- * Returns null if no results found, or { exhausted: true } if monthly API budget is spent.
+ * Search with Exa — uses the direct API while an API key and local monthly
+ * budget are available, otherwise falls back to Exa's MCP endpoint.
+ * Returns null if no results are found.
  */
 export async function searchWithExa(
 	query: string,
@@ -534,9 +532,9 @@ export async function searchWithExa(
 		return searchWithExaMcp(query, options);
 	}
 
-	// Check monthly budget
+	// Fall back to MCP when the configured direct-API budget is exhausted.
 	const budget = reserveRequestBudget();
-	if (budget) return { exhausted: true };
+	if (budget) return searchWithExaMcp(query, options);
 
 	// Decide which endpoint to use:
 	// - Answer endpoint: simple queries without content/domain/recency filters

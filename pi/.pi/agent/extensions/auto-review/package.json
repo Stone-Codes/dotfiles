@@ -1,0 +1,10 @@
+{
+  "name": "pi-auto-review",
+  "version": "1.0.0",
+  "description": "Claude-Code-style automatic review prompt after code changes",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,10 @@
+{
+  "name": "pi-orchestrator",
+  "version": "1.0.0",
+  "description": "Agent-pi-style teams, chains, pipelines, and modes for Pi",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {}
+}

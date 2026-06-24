@@ -10,16 +10,16 @@
  * - Support for both coding and general plans
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { AgentMessage, ToolCallContent } from "@mariozechner/pi-ai";
-import { Key } from "@mariozechner/pi-tui";
-import { z } from "zod";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage, ToolCallContent } from "@earendil-works/pi-ai";
+import { Key } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { writeFile, readFile, existsSync } from "node:fs";
 import { join } from "node:path";
 
 // Tool sets
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls"];
-const EXECUTE_MODE_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "scout", "create_plan"];
+const EXECUTE_MODE_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "approve_step", "complete_step"];
 
 interface PlanStep {
   step: number;
@@ -42,11 +42,12 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
   let executionMode = false;
   let currentPlan: PlanData | null = null;
   let currentStepIndex = 0;
+  let toolsBeforePlanMode: string[] | undefined;
 
   // ==================== State Management ====================
 
-  function getPlanFilePath(): string {
-    return join(process.cwd(), "PLAN.md");
+  function getPlanFilePath(cwd: string): string {
+    return join(cwd, "PLAN.md");
   }
 
   function savePlanToDisk(plan: PlanData): Promise<void> {
@@ -59,8 +60,8 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
     });
   }
 
-  function loadPlanFromDisk(): Promise<PlanData | null> {
-    const filePath = getPlanFilePath();
+  function loadPlanFromDisk(cwd: string): Promise<PlanData | null> {
+    const filePath = getPlanFilePath(cwd);
     return new Promise((resolve) => {
       if (!existsSync(filePath)) {
         resolve(null);
@@ -228,7 +229,39 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
       executing: executionMode,
       plan: currentPlan,
       currentStepIndex,
+      toolsBeforePlanMode,
     });
+  }
+
+  function uniqueToolNames(toolNames: string[]): string[] {
+    return [...new Set(toolNames)];
+  }
+
+  function enablePlanModeTools(): void {
+    if (toolsBeforePlanMode === undefined) {
+      toolsBeforePlanMode = pi.getActiveTools();
+    }
+
+    pi.setActiveTools(uniqueToolNames([
+      ...toolsBeforePlanMode.filter((name) => name !== "edit" && name !== "write"),
+      ...PLAN_MODE_TOOLS,
+    ]));
+  }
+
+  function enableExecutionTools(): void {
+    const baseTools = toolsBeforePlanMode ?? pi.getActiveTools();
+    pi.setActiveTools(uniqueToolNames([
+      ...baseTools,
+      ...EXECUTE_MODE_TOOLS,
+    ]));
+    toolsBeforePlanMode = undefined;
+  }
+
+  function restoreNormalTools(): void {
+    if (toolsBeforePlanMode !== undefined) {
+      pi.setActiveTools(toolsBeforePlanMode);
+      toolsBeforePlanMode = undefined;
+    }
   }
 
   // ==================== Sub-Agent Tools ====================
@@ -238,9 +271,9 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
     name: "scout",
     label: "Scout",
     description: "Gather context about code, files, or project structure",
-    parameters: z.object({
-      query: z.string().describe("What to investigate"),
-      focus: z.string().optional().describe("Specific area to focus on"),
+    parameters: Type.Object({
+      query: Type.String({ description: "What to investigate" }),
+      focus: Type.Optional(Type.String({ description: "Specific area to focus on" })),
     }),
     promptSnippet: "Gather context about code, files, or project structure",
     promptGuidelines: [
@@ -271,11 +304,11 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
     name: "create_plan",
     label: "Create Plan",
     description: "Create a structured plan and save to PLAN.md",
-    parameters: z.object({
-      goal: z.string().describe("One-sentence summary of what needs to be done"),
-      steps: z.array(z.string()).describe("Numbered steps, each specific and actionable"),
-      files: z.array(z.string()).optional().describe("Files to modify"),
-      risks: z.array(z.string()).optional().describe("Things to watch out for"),
+    parameters: Type.Object({
+      goal: Type.String({ description: "One-sentence summary of what needs to be done" }),
+      steps: Type.Array(Type.String(), { description: "Numbered steps, each specific and actionable" }),
+      files: Type.Optional(Type.Array(Type.String(), { description: "Files to modify" })),
+      risks: Type.Optional(Type.Array(Type.String(), { description: "Things to watch out for" })),
     }),
     promptSnippet: "Create a structured plan with steps",
     promptGuidelines: [
@@ -298,7 +331,7 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
         files: params.files ?? [],
         risks: params.risks ?? [],
         createdAt: Date.now(),
-        filePath: getPlanFilePath(),
+        filePath: getPlanFilePath(ctx.cwd),
       };
 
       try {
@@ -330,8 +363,8 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
     name: "approve_step",
     label: "Approve Step",
     description: "Approve a specific step for execution",
-    parameters: z.object({
-      step: z.number().describe("Step number to approve"),
+    parameters: Type.Object({
+      step: Type.Number({ description: "Step number to approve" }),
     }),
     promptSnippet: "Approve a step for execution",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -368,8 +401,8 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
     name: "complete_step",
     label: "Complete Step",
     description: "Mark a step as completed",
-    parameters: z.object({
-      step: z.number().describe("Step number to mark complete"),
+    parameters: Type.Object({
+      step: Type.Number({ description: "Step number to mark complete" }),
     }),
     promptSnippet: "Mark a step as completed",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -413,10 +446,10 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
       currentStepIndex = 0;
 
       if (planModeEnabled) {
-        pi.setActiveTools(PLAN_MODE_TOOLS);
+        enablePlanModeTools();
         ctx.ui.notify("Plan mode enabled. Use scout + create_plan tools.");
       } else {
-        pi.setActiveTools(EXECUTE_MODE_TOOLS);
+        restoreNormalTools();
         ctx.ui.notify("Plan mode disabled. Full access restored.");
       }
       updateStatus(ctx);
@@ -427,7 +460,7 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
   pi.registerCommand("plan-view", {
     description: "View current plan from PLAN.md",
     handler: async (_args, ctx) => {
-      const plan = await loadPlanFromDisk();
+      const plan = await loadPlanFromDisk(ctx.cwd);
       if (!plan) {
         ctx.ui.notify("No PLAN.md found", "info");
         return;
@@ -450,7 +483,7 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
   pi.registerCommand("plan-execute", {
     description: "Start executing the current plan with approval",
     handler: async (_args, ctx) => {
-      const plan = await loadPlanFromDisk();
+      const plan = await loadPlanFromDisk(ctx.cwd);
       if (!plan || plan.steps.length === 0) {
         ctx.ui.notify("No plan to execute. Create one first.", "error");
         return;
@@ -461,7 +494,7 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
       planModeEnabled = false;
       currentStepIndex = 0;
 
-      pi.setActiveTools(EXECUTE_MODE_TOOLS);
+      enableExecutionTools();
       ctx.ui.notify(`Starting execution of ${plan.steps.length} steps`);
       updateStatus(ctx);
       persistState();
@@ -483,10 +516,10 @@ export default function advancedPlanMode(pi: ExtensionAPI): void {
       executionMode = false;
 
       if (planModeEnabled) {
-        pi.setActiveTools(PLAN_MODE_TOOLS);
+        enablePlanModeTools();
         ctx.ui.notify("Plan mode (advanced) enabled", "info");
       } else {
-        pi.setActiveTools(EXECUTE_MODE_TOOLS);
+        restoreNormalTools();
         ctx.ui.notify("Normal mode restored", "info");
       }
       updateStatus(ctx);
@@ -676,7 +709,7 @@ Ask for approval if needed.`,
   // Restore state on session start
   pi.on("session_start", async (event, ctx) => {
     // Try to load from disk first
-    const diskPlan = await loadPlanFromDisk();
+    const diskPlan = await loadPlanFromDisk(ctx.cwd);
     if (diskPlan) {
       currentPlan = diskPlan;
     }
@@ -696,10 +729,14 @@ Ask for approval if needed.`,
       currentStepIndex = lastState.data.currentStepIndex ?? 0;
     }
 
+    if (lastState?.data?.toolsBeforePlanMode) {
+      toolsBeforePlanMode = lastState.data.toolsBeforePlanMode;
+    }
+
     if (planModeEnabled) {
-      pi.setActiveTools(PLAN_MODE_TOOLS);
+      enablePlanModeTools();
     } else if (executionMode) {
-      pi.setActiveTools(EXECUTE_MODE_TOOLS);
+      enableExecutionTools();
     }
 
     updateStatus(ctx);

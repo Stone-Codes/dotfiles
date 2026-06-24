@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadPolicy, checkToolPermission, checkBashPermission, checkSkillPermission, checkMcpPermission, deriveMcpTarget } from "./src/permission-manager";
 import { getLogPath } from "./src/logging";
 import type { SessionPermissionState } from "./types";
@@ -32,8 +32,8 @@ function isReadOnlyBashCommand(command: string, cwd: string): boolean {
     /^git\s+log/,
     /^git\s+diff/,
     /^git\s+show/,
-    /^git\s+branch/,
-    /^git\s+remote/,
+    /^git\s+branch(\s+(-a|--all|-r|--remotes|--list))*(\s|$)/,
+    /^git\s+remote(\s+(-v|--verbose|show)(\s|$)|\s*$)/,
     /^pwd(\s|$)/,
     /^echo\s/,
     /^which\s/,
@@ -57,6 +57,10 @@ function isReadOnlyBashCommand(command: string, cwd: string): boolean {
     /dd\s/,
     /sudo/,
     /su\s/,
+    /\bfind\b.*\s-delete\b/,
+    /\bfind\b.*\s-exec\b/,
+    /\bgit\s+branch\s+(-d|-D|--delete|--move|--copy|--set-upstream-to)\b/,
+    /\bgit\s+remote\s+(add|remove|rm|rename|set-url|prune|update)\b/,
     /\.\.\//,
     /^\s*\//,
   ];

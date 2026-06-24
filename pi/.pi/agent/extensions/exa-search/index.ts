@@ -16,9 +16,9 @@
  *   { "env": { "EXA_API_KEY": "your-api-key" } }
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { isExaAvailable, searchWithExa, type ExaSearchOptions, type SearchResponse } from "./exa-client";
 
 export default function exaSearchExtension(pi: ExtensionAPI) {
@@ -150,21 +150,6 @@ export default function exaSearchExtension(pi: ExtensionAPI) {
 
 				try {
 					const result = await searchWithExa(query, options);
-
-					// Handle monthly limit exhaustion
-					if (result && "exhausted" in result && result.exhausted === true) {
-						return {
-							content: [
-								{
-									type: "text",
-									text: "Exa API monthly request limit reached. The free MCP fallback has no limit — " +
-										"consider removing your EXA_API_KEY to use the free MCP endpoint, or wait for the monthly reset.",
-								},
-							],
-							details: { error: "monthly_limit_exhausted" },
-							isError: true,
-						};
-					}
 
 					if (!result) {
 						errors.push(`No results for: "${query}"`);
