@@ -60,23 +60,79 @@ function unique(values: string[]): string[] {
 }
 
 function isReadOnlyBash(command: string): boolean {
-  const cmd = command.trim();
+  const cmd = command
+    .trim()
+    .replace(/\s+2>\s*\/dev\/null/g, "")
+    .replace(/\s+\|\|\s+true\s*$/g, "")
+    .trim();
+  const dangerous = /\b(rm|mv|cp|chmod|chown|sudo|git\s+(add|commit|push|pull|merge|rebase|checkout|switch|restore|reset)|pi\s+update|npm\s+install|pnpm\s+install|yarn\s+add)\b|>|>>/;
+  if (!cmd || dangerous.test(cmd)) return false;
+
+  const splitOutsideQuotes = (text, separators) => {
+    const parts = [];
+    let current = "";
+    let quote;
+    let escaped = false;
+    for (const char of text) {
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        current += char;
+        escaped = true;
+        continue;
+      }
+      if ((char === "'" || char === '"') && !quote) {
+        quote = char;
+        current += char;
+        continue;
+      }
+      if (char === quote) {
+        quote = undefined;
+        current += char;
+        continue;
+      }
+      if (!quote && separators.includes(char)) {
+        if (current.trim()) parts.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+  };
+
   const readOnly = [
-    /^pwd\b/,
-    /^ls\b/,
-    /^cat\b/,
-    /^head\b/,
-    /^tail\b/,
-    /^grep\b/,
-    /^rg\b/,
-    /^find\b(?!.*\s(-delete|-exec)\b)/,
-    /^git\s+(status|diff|log|show|branch\s*(-a|--all|-r|--remotes|--list)?|remote\s*(-v|--verbose)?\s*)\b/,
-    /^npm\s+(test|run\s+\S+)/,
-    /^pnpm\s+(test|run\s+\S+)/,
-    /^yarn\s+(test|run\s+\S+)/,
+    /^pwd\b[^;&|<>]*$/,
+    /^ls\b[^;&|<>]*$/,
+    /^cat\b[^;&|<>]*$/,
+    /^head\b[^;&|<>]*$/,
+    /^tail\b[^;&|<>]*$/,
+    /^grep\b[^;&|<>]*$/,
+    /^rg\b[^;&|<>]*$/,
+    /^sort\b[^;&|<>]*$/,
+    /^echo\b[^;&|<>]*$/,
+    /^printf\b[^;&|<>]*$/,
+    /^find\b(?!.*\s(-delete|-exec)\b)[^;&|<>]*$/,
+    /^find\s+[^<>]*\s-exec\s+sh\s+-c\s+'echo --- \$1; sed -n "1,120p" "\$1"'\s+sh\s+\{\}\s+\\;$/,
+    /^du\s+(-[A-Za-z]+\s+)*[^;&|<>]*$/,
+    /^wc\s+(-[A-Za-z]+\s+)*[^;&|<>]*$/,
+    /^git\s+(?:-C\s+\S+\s+)?(status|diff|log|show|ls-files|branch\s*(-a|--all|-r|--remotes|--list)?|remote\s*(-v|--verbose)?\s*)\b[^;&|<>]*$/,
+    /^pi\s+(--version\b|list\b|--list-models\b)[^;&|<>]*$/,
+    /^for\s+\w+\s+in\s+[^;&|<>]+;\s*do\s+echo\s+[^;&|<>]+;\s*head\s+-?\d*\s+"?\$\w+"?;\s*done$/,
+    /^npm\s+(test|run\s+\S+)[^;&|<>]*$/,
+    /^pnpm\s+(test|run\s+\S+)[^;&|<>]*$/,
+    /^yarn\s+(test|run\s+\S+)[^;&|<>]*$/,
   ];
-  const dangerous = /\b(rm|mv|cp|chmod|chown|sudo|git\s+(add|commit|push|pull|merge|rebase|checkout|switch|restore|reset)|npm\s+install|pnpm\s+install|yarn\s+add)\b|>|>>/;
-  return readOnly.some((pattern) => pattern.test(cmd)) && !dangerous.test(cmd);
+
+  const isReadOnlySingle = (single) => readOnly.some((pattern) => pattern.test(single));
+  const isReadOnlyPipeline = (single) => splitOutsideQuotes(single, "|").every(isReadOnlySingle);
+
+  if (isReadOnlySingle(cmd)) return true;
+  return splitOutsideQuotes(cmd, ";\n").every(isReadOnlyPipeline);
 }
 
 function summarizeMutations(messages: any[]): MutationSummary {
@@ -130,7 +186,7 @@ function buildReviewTask(summary: MutationSummary, gitStatus: string): string {
     "Changed files observed from tools:",
     fileList,
     "",
-    "Potentially mutating bash commands observed:",
+    "Unclassified bash commands observed:",
     bashList,
     "",
     "Git status:",
