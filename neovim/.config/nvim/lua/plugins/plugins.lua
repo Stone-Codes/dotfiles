@@ -99,7 +99,7 @@ return {
       behaviour = {
         auto_suggestions = false,
         auto_set_highlight_group = true,
-        auto_set_keymaps = true,
+        auto_set_keymaps = false,
         auto_apply_diff_after_generation = false,
         minimize_diff = true,
         auto_approve_tool_permissions = false,
