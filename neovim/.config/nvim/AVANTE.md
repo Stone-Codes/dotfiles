@@ -32,6 +32,7 @@ The leader key is `<Space>` in this configuration.
 | `<Space>af` | Normal | Focus the Avante sidebar |
 | `<Space>ar` | Normal | Refresh Avante/Codex ACP session |
 | `<Space>as` | Normal | Stop the active request |
+| `<Space>ax` | Normal | Clear the current conversation |
 | `<Space>ah` | Normal | Open this guide |
 
 ### Avante sidebar mappings

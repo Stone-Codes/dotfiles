@@ -8,4 +8,5 @@ vim.keymap.set("v", "<leader>aa", "<cmd>AvanteAsk<CR>", { desc = "Avante: ask ab
 vim.keymap.set("n", "<leader>af", "<cmd>AvanteFocus<CR>", { desc = "Avante: focus sidebar" })
 vim.keymap.set("n", "<leader>ar", "<cmd>AvanteRefresh<CR>", { desc = "Avante: refresh" })
 vim.keymap.set("n", "<leader>as", "<cmd>AvanteStop<CR>", { desc = "Avante: stop request" })
+vim.keymap.set("n", "<leader>ax", "<cmd>AvanteClear<CR>", { desc = "Avante: clear conversation" })
 vim.keymap.set("n", "<leader>ah", open_avante_guide, { desc = "Avante: open guide" })
