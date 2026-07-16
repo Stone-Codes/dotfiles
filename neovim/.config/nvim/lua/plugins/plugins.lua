@@ -81,5 +81,82 @@ return {
     ---@module 'render-markdown'
     ---@type render.md.UserConfig
     opts = {},
-  }
+  },
+  {
+    'yetone/avante.nvim',
+    event = 'VeryLazy',
+    version = false,
+    opts = {
+      mode = 'agentic',
+      provider = 'codex',
+      auto_suggestions_provider = nil,
+      acp_providers = {
+        codex = {
+          command = 'npx',
+          args = { '-y', '@agentclientprotocol/codex-acp' },
+        },
+      },
+      behaviour = {
+        auto_suggestions = false,
+        auto_set_highlight_group = true,
+        auto_set_keymaps = true,
+        auto_apply_diff_after_generation = false,
+        minimize_diff = true,
+        auto_approve_tool_permissions = false,
+      },
+      mappings = {
+        submit = {
+          normal = '<CR>',
+          insert = '<C-g>',
+        },
+        cancel = {
+          normal = { '<C-c>', '<Esc>', 'q' },
+          insert = { '<C-c>' },
+        },
+        sidebar = {
+          apply_all = 'A',
+          apply_cursor = 'a',
+          retry_user_request = 'r',
+          edit_user_request = 'e',
+          switch_windows = '<Tab>',
+          reverse_switch_windows = '<S-Tab>',
+        },
+        diff = {
+          ours = 'co',
+          theirs = 'ct',
+          all_theirs = 'ca',
+          both = 'cb',
+          cursor = 'cc',
+          next = ']x',
+          prev = '[x',
+        },
+        jump = {
+          next = ']]',
+          prev = '[[',
+        },
+        stop = '<leader>as',
+      },
+      windows = {
+        position = 'right',
+        width = 36,
+        wrap = true,
+        sidebar_header = {
+          enabled = true,
+          align = 'left',
+          rounded = true,
+        },
+        input = {
+          prefix = '> ',
+          height = 8,
+        },
+      },
+    },
+    dependencies = {
+      'nvim-lua/plenary.nvim',
+      'MunifTanjim/nui.nvim',
+      'stevearc/dressing.nvim',
+      'nvim-treesitter/nvim-treesitter',
+      'MeanderingProgrammer/render-markdown.nvim',
+    },
+  },
 }
