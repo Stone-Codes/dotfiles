@@ -27,6 +27,7 @@ The leader key is `<Space>` in this configuration.
 | Mapping | Mode | Action |
 | --- | --- | --- |
 | `<Space>aa` | Normal | Toggle Avante sidebar |
+| `<Space>aa` | Visual | Ask Codex about the selection |
 | `<Space>ac` | Normal/Visual | Ask Codex about the buffer or selection |
 | `<Space>af` | Normal | Focus the Avante sidebar |
 | `<Space>ar` | Normal | Refresh Avante/Codex ACP session |
