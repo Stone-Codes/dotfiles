@@ -4,9 +4,16 @@ Avante is an AI coding sidebar for Neovim. This configuration connects it to the
 
 ## Quick start
 
-1. Restart Neovim, or run `:Lazy sync`.
-2. Press `<Space>aa` to open the Avante sidebar.
-3. On first use, choose the Codex/ChatGPT subscription login and complete the browser flow.
+1. Authenticate Codex once from a terminal:
+
+   ```bash
+   npx -y @openai/codex login
+   npx -y @openai/codex login status
+   ```
+
+   Choose **Sign in with ChatGPT** in the browser flow. The status command should report that you are logged in.
+2. Restart Neovim, or run `:Lazy sync`.
+3. Press `<Space>aa` to open the Avante sidebar.
 4. Press `<Space>ac` to ask about the current file.
 5. In visual mode, select code and press `<Space>ac` to ask about only that selection.
 6. Review every proposed diff before applying it.
@@ -117,7 +124,7 @@ The ACP adapter is launched with:
 npx -y @agentclientprotocol/codex-acp
 ```
 
-The first launch may take longer while `npx` downloads and caches the adapter.
+The first launch may take longer while `npx` downloads and caches the adapter. The ACP adapter reuses the Codex login stored in `~/.codex/auth.json`.
 
 ## Troubleshooting
 
@@ -129,9 +136,16 @@ The first launch may take longer while `npx` downloads and caches the adapter.
 4. Try `:AvanteToggle` directly.
 5. Check `:messages` for Lua/plugin errors.
 
-### Login does not appear
+### Authentication required
 
-Run `:AvanteRefresh`, restart Neovim, and open the sidebar again. Complete the browser flow offered by Codex ACP.
+Authenticate Codex outside Neovim first:
+
+```bash
+npx -y @openai/codex login
+npx -y @openai/codex login status
+```
+
+Choose **Sign in with ChatGPT**, then restart Neovim and run `:AvanteRefresh`. The adapter reads the resulting `~/.codex/auth.json`; do not copy that file into the repository.
 
 ### ACP adapter cannot start
 

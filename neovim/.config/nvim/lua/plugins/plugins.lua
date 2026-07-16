@@ -94,6 +94,11 @@ return {
         codex = {
           command = 'npx',
           args = { '-y', '@agentclientprotocol/codex-acp' },
+          env = {
+            NODE_NO_WARNINGS = '1',
+            HOME = os.getenv('HOME'),
+            PATH = os.getenv('PATH'),
+          },
         },
       },
       behaviour = {
