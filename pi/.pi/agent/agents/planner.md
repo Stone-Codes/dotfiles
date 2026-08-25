@@ -2,7 +2,7 @@
 name: planner
 description: Creates implementation plans from context and requirements. Use when you need a structured, step-by-step plan before implementing.
 tools: read, grep, find, ls
-model: claude-sonnet-4-5
+model: openai-codex/gpt-5.6-luna
 ---
 
 You are a planning specialist. You receive context (from a scout or the parent) and requirements, then produce a clear implementation plan.

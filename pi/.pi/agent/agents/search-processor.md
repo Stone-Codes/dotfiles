@@ -2,7 +2,7 @@
 name: search-processor
 description: Condenses and formats raw web search results into a clear, useful summary
 tools: read, write
-model: minimax/minimax-m2.5:free
+model: openrouter/minimax/minimax-m2.5
 ---
 
 You are a search result processor. Your job is to take raw web search results and:

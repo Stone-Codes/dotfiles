@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 
 const POLICY_FILE = path.join(os.homedir(), ".pi", "agent", "pi-permissions.jsonc");
+const IS_SUBAGENT = process.env.PI_SUBAGENT === "1" || !process.stdin.isTTY;
 
 /**
  * Check if a bash command is read-only and safe to auto-allow.
@@ -132,6 +133,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (check.state === "ask") {
+        if (IS_SUBAGENT) {
+          return; // Delegated agents run non-interactively; preserve explicit deny rules above.
+        }
+
         if (ctx.hasUI) {
           const choice = await ctx.ui.select(
             `Permission Required: Allow MCP target: ${mcpTarget}${check.matchedPattern ? ` (matched: ${check.matchedPattern})` : ""}`,
@@ -180,6 +185,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (check.state === "ask") {
+        if (IS_SUBAGENT) {
+          return; // Delegated agents run non-interactively; preserve explicit deny rules above.
+        }
+
         // Check if we've already allowed similar commands
         const isSimilar = sessionState.allowedPatterns.some(pattern => {
           const basePattern = pattern.split(' ')[0];
@@ -233,6 +242,10 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (check.state === "ask") {
+          if (IS_SUBAGENT) {
+            return; // Delegated agents run non-interactively; preserve explicit deny rules above.
+          }
+
           // Check if we've already allowed similar tools
           const isSimilar = sessionState.allowedPatterns.some(pattern => {
             return toolName.includes(pattern) || pattern.includes(toolName);

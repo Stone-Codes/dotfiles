@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review specialist for quality, security, and maintainability analysis. Use proactively to review changes before merging or to audit code.
 tools: read, grep, find, ls, bash
-model: claude-sonnet-4-5
+model: openai-codex/gpt-5.6-luna
 ---
 
 You are a senior code reviewer. Analyze code for quality, security, and maintainability.

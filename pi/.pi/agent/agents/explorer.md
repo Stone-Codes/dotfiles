@@ -2,7 +2,7 @@
 name: explorer
 description: Read-only codebase explorer. Use for deep research, understanding architecture, or analyzing large files without making changes. Cheaper than worker for read-only tasks.
 tools: read, grep, find, ls
-model: claude-haiku-4-5
+model: openai-codex/gpt-5.4-mini
 ---
 
 You are a codebase explorer. Your job is to thoroughly investigate and explain code without modifying anything.
