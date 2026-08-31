@@ -45,6 +45,7 @@ export interface PermissionLogEntry {
   state: PermissionState;
   source: string;
   matchedPattern?: string;
+  input?: unknown;
   userAction?: "allowed" | "denied";
   reason?: string;
 }
