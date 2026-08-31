@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -102,6 +109,34 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
+const staleLockDir = mkdtempSync(join(tmpdir(), "pi-permissions-stale-lock-"));
+const stalePolicyPath = join(staleLockDir, "pi-permissions.jsonc");
+const staleLockPath = `${stalePolicyPath}.lock`;
+try {
+  writeFileSync(stalePolicyPath, "{}\n");
+  writeFileSync(staleLockPath, "not valid lock metadata\n");
+  const staleTime = new Date(0);
+  utimesSync(staleLockPath, staleTime, staleTime);
+
+  const staleScript = `
+    import { updatePolicyFile } from ${JSON.stringify(configPath)};
+    updatePolicyFile(${JSON.stringify(stalePolicyPath)}, (policy) => {
+      policy.auto ??= {};
+      policy.auto.recovered = true;
+    });
+  `;
+  const staleResult = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", staleScript],
+    { encoding: "utf8" },
+  );
+  assert.equal(staleResult.status, 0, staleResult.stderr || staleResult.stdout);
+  assert.equal(JSON.parse(readFileSync(stalePolicyPath, "utf8")).auto.recovered, true);
+  assert.equal(existsSync(staleLockPath), false);
+} finally {
+  rmSync(staleLockDir, { recursive: true, force: true });
+}
+
 const concurrentDir = mkdtempSync(join(tmpdir(), "pi-permissions-lock-"));
 const concurrentPolicyPath = join(concurrentDir, "pi-permissions.jsonc");
 const markerA = join(concurrentDir, "entered-a");
@@ -117,9 +152,10 @@ const concurrentScript = (marker, key) => `
       policy.auto[${JSON.stringify(key)}] = true;
     });
   `;
-const runConcurrentUpdate = (marker, key) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(
+const runConcurrentUpdate = (marker, key) => {
+  let child;
+  const done = new Promise((resolve, reject) => {
+    child = spawn(
       process.execPath,
       [
         "--experimental-strip-types",
@@ -143,6 +179,8 @@ const runConcurrentUpdate = (marker, key) =>
       }
     });
   });
+  return { done, pid: child.pid };
+};
 
 try {
   writeFileSync(concurrentPolicyPath, "{}\n");
@@ -151,8 +189,11 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.equal(existsSync(markerA), true);
+  const lockMetadata = JSON.parse(readFileSync(`${concurrentPolicyPath}.lock`, "utf8"));
+  assert.equal(lockMetadata.pid, firstUpdate.pid);
+  assert.equal(typeof lockMetadata.acquiredAt, "number");
   const secondUpdate = runConcurrentUpdate(markerB, "second");
-  await Promise.all([firstUpdate, secondUpdate]);
+  await Promise.all([firstUpdate.done, secondUpdate.done]);
 
   const persistedConcurrent = JSON.parse(readFileSync(concurrentPolicyPath, "utf8"));
   assert.equal(persistedConcurrent.auto.first, true);

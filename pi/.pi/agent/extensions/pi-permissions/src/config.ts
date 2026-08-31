@@ -5,6 +5,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -76,19 +77,119 @@ function stripJsoncComments(content: string): string {
 const LOCK_RETRY_ATTEMPTS = 50;
 const LOCK_INITIAL_BACKOFF_MS = 10;
 const LOCK_MAX_BACKOFF_MS = 100;
+const LOCK_STALE_AFTER_MS = 30_000;
+
+type LockMetadata = {
+  pid: number;
+  acquiredAt: number;
+};
 
 function sleepSync(milliseconds: number): void {
   const waitArray = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(waitArray, 0, 0, milliseconds);
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      return false;
+    }
+    // EPERM means the process exists but is not signalable. For any other
+    // uncertainty, keep the lock rather than risking another owner's lock.
+    return true;
+  }
+}
+
+function isLockMetadata(value: unknown): value is LockMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const metadata = value as Record<string, unknown>;
+  return (
+    typeof metadata.pid === "number" &&
+    Number.isSafeInteger(metadata.pid) &&
+    metadata.pid > 0 &&
+    typeof metadata.acquiredAt === "number" &&
+    Number.isFinite(metadata.acquiredAt) &&
+    metadata.acquiredAt > 0
+  );
+}
+
+function isStaleLock(lockPath: string): boolean {
+  let lockStat;
+  let contents: string;
+  try {
+    lockStat = statSync(lockPath);
+    contents = readFileSync(lockPath, "utf8");
+  } catch {
+    return false;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    // A process can briefly leave an empty/malformed file while writing its
+    // metadata. Its mtime must therefore prove that it is old first.
+    return Date.now() - lockStat.mtimeMs >= LOCK_STALE_AFTER_MS;
+  }
+
+  if (!isLockMetadata(parsed)) {
+    return Date.now() - lockStat.mtimeMs >= LOCK_STALE_AFTER_MS;
+  }
+
+  const metadataIsOld = Date.now() - parsed.acquiredAt >= LOCK_STALE_AFTER_MS;
+  return metadataIsOld && !isProcessAlive(parsed.pid);
+}
+
+function removeStaleLock(lockPath: string): boolean {
+  if (!isStaleLock(lockPath)) {
+    return false;
+  }
+
+  try {
+    unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    return false;
+  }
+}
+
 function acquireLock(lockPath: string): number {
   for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
+    let lockFd: number | undefined;
     try {
-      return openSync(lockPath, "wx", 0o600);
+      lockFd = openSync(lockPath, "wx", 0o600);
+      writeFileSync(
+        lockFd,
+        JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }),
+        { encoding: "utf8" },
+      );
+      return lockFd;
     } catch (error) {
+      if (lockFd !== undefined) {
+        try {
+          closeSync(lockFd);
+        } finally {
+          try {
+            unlinkSync(lockPath);
+          } catch {
+            // Preserve the metadata write error.
+          }
+        }
+      }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
+      }
+      if (removeStaleLock(lockPath)) {
+        continue;
       }
       if (attempt === LOCK_RETRY_ATTEMPTS - 1) {
         break;
