@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -13,7 +14,9 @@ import { spawn, spawnSync } from "node:child_process";
 
 const extensionDir = new URL(".", import.meta.url);
 const source = readFileSync(new URL("./types.ts", extensionDir), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("./package.json", extensionDir), "utf8"));
 
+assert.equal(packageJson.dependencies["proper-lockfile"], "^4.1.2");
 assert.equal(source.includes('type PermissionMode = "manual" | "auto" | "allow-all"'), true);
 assert.equal(source.includes('mode: "manual"'), true);
 assert.equal(source.includes("consecutiveAutoDenials"), true);
@@ -42,6 +45,8 @@ assert.match(
   configSource,
   /PolicyDocument = PermissionPolicy & Record<string, unknown>/,
 );
+assert.match(configSource, /updatePolicyFile\(filePath: string, update: PolicyUpdater\): Promise<void>/);
+assert.doesNotMatch(configSource, /\.recovery|acquireRecoveryMarker|removeStaleLock/);
 
 try {
   writeFileSync(
@@ -86,7 +91,7 @@ try {
 
   const script = `
     import { updatePolicyFile } from ${JSON.stringify(configPath)};
-    updatePolicyFile(${JSON.stringify(policyPath)}, (policy) => {
+    await updatePolicyFile(${JSON.stringify(policyPath)}, (policy) => {
       policy.auto ??= {};
       policy.auto.classifierModel = { provider: "anthropic", id: "claude-sonnet-4-5" };
     });
@@ -109,24 +114,40 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
+const invalidPolicyDir = mkdtempSync(join(tmpdir(), "pi-permissions-invalid-policy-"));
+const invalidPolicyPath = join(invalidPolicyDir, "pi-permissions.jsonc");
+try {
+  const originalPolicy = '{ "defaultPolicy": { "bash": "deny" },\n';
+  writeFileSync(invalidPolicyPath, originalPolicy);
+  const invalidScript = `
+    import { updatePolicyFile } from ${JSON.stringify(configPath)};
+    await updatePolicyFile(${JSON.stringify(invalidPolicyPath)}, (policy) => {
+      policy.auto = { shouldNotPersist: true };
+    });
+  `;
+  const invalidResult = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", invalidScript],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(invalidResult.status, 0, "invalid policy unexpectedly persisted");
+  assert.equal(readFileSync(invalidPolicyPath, "utf8"), originalPolicy);
+} finally {
+  rmSync(invalidPolicyDir, { recursive: true, force: true });
+}
+
 const staleLockDir = mkdtempSync(join(tmpdir(), "pi-permissions-stale-lock-"));
 const stalePolicyPath = join(staleLockDir, "pi-permissions.jsonc");
 const staleLockPath = `${stalePolicyPath}.lock`;
 try {
   writeFileSync(stalePolicyPath, "{}\n");
-  const deadOwnerMetadata = {
-    pid: 999999999,
-    acquiredAt: Date.now() - 60_000,
-  };
-  writeFileSync(staleLockPath, JSON.stringify(deadOwnerMetadata));
-  writeFileSync(`${staleLockPath}.recovery`, JSON.stringify(deadOwnerMetadata));
+  mkdirSync(staleLockPath);
   const staleTime = new Date(0);
   utimesSync(staleLockPath, staleTime, staleTime);
-  utimesSync(`${staleLockPath}.recovery`, staleTime, staleTime);
 
   const staleScript = `
     import { updatePolicyFile } from ${JSON.stringify(configPath)};
-    updatePolicyFile(${JSON.stringify(stalePolicyPath)}, (policy) => {
+    await updatePolicyFile(${JSON.stringify(stalePolicyPath)}, (policy) => {
       policy.auto ??= {};
       policy.auto.recovered = true;
     });
@@ -144,18 +165,21 @@ try {
   rmSync(staleLockDir, { recursive: true, force: true });
 }
 
-function assertLockPreserved(label, metadata) {
+function assertLockPreserved(label, stale) {
   const fixtureDir = mkdtempSync(join(tmpdir(), `pi-permissions-${label}-`));
   const policyPath = join(fixtureDir, "pi-permissions.jsonc");
   const lockPath = `${policyPath}.lock`;
   try {
     writeFileSync(policyPath, "{}\n");
-    const serializedMetadata = JSON.stringify(metadata);
-    writeFileSync(lockPath, serializedMetadata);
+    mkdirSync(lockPath);
+    if (stale) {
+      const staleTime = new Date(0);
+      utimesSync(lockPath, staleTime, staleTime);
+    }
 
     const blockedScript = `
       import { updatePolicyFile } from ${JSON.stringify(configPath)};
-      updatePolicyFile(${JSON.stringify(policyPath)}, (policy) => {
+      await updatePolicyFile(${JSON.stringify(policyPath)}, (policy) => {
         policy.auto ??= {};
         policy.auto.shouldNotPersist = true;
       });
@@ -166,21 +190,65 @@ function assertLockPreserved(label, metadata) {
       { encoding: "utf8" },
     );
     assert.notEqual(result.status, 0, `${label} lock unexpectedly allowed an update`);
-    assert.equal(readFileSync(lockPath, "utf8"), serializedMetadata);
+    assert.equal(existsSync(lockPath), true);
     assert.equal(existsSync(`${lockPath}.recovery`), false);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
   }
 }
 
-assertLockPreserved("fresh-lock", {
-  pid: process.pid,
-  acquiredAt: Date.now(),
-});
-assertLockPreserved("stale-live-lock", {
-  pid: process.pid,
-  acquiredAt: Date.now() - 60_000,
-});
+assertLockPreserved("fresh-lock", false);
+
+const liveLockDir = mkdtempSync(join(tmpdir(), "pi-permissions-live-lock-"));
+const livePolicyPath = join(liveLockDir, "pi-permissions.jsonc");
+const liveLockPath = `${livePolicyPath}.lock`;
+const liveMarkerPath = join(liveLockDir, "holder-ready");
+const liveHolderScript = `
+    import lockfile from "proper-lockfile";
+    import { writeFileSync } from "node:fs";
+    const release = await lockfile.lock(${JSON.stringify(livePolicyPath)}, { stale: 5000 });
+    writeFileSync(${JSON.stringify(liveMarkerPath)}, "ready");
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await release();
+  `;
+try {
+  writeFileSync(livePolicyPath, "{}\n");
+  const liveHolder = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", liveHolderScript],
+    { cwd: extensionDir.pathname, stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let liveStderr = "";
+  liveHolder.stderr.setEncoding("utf8");
+  liveHolder.stderr.on("data", (chunk) => {
+    liveStderr += chunk;
+  });
+  for (let attempt = 0; attempt < 200 && !existsSync(liveMarkerPath); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(existsSync(liveMarkerPath), true, liveStderr);
+  const liveAttemptScript = `
+    import { updatePolicyFile } from ${JSON.stringify(configPath)};
+    await updatePolicyFile(${JSON.stringify(livePolicyPath)}, (policy) => {
+      policy.auto ??= {};
+      policy.auto.shouldNotPersist = true;
+    });
+  `;
+  const liveAttempt = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", liveAttemptScript],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(liveAttempt.status, 0, "live lock unexpectedly allowed an update");
+  assert.equal(liveHolder.exitCode, null);
+  assert.equal(existsSync(liveLockPath), true);
+  await new Promise((resolve, reject) => {
+    liveHolder.once("error", reject);
+    liveHolder.once("close", resolve);
+  });
+} finally {
+  rmSync(liveLockDir, { recursive: true, force: true });
+}
 
 const concurrentDir = mkdtempSync(join(tmpdir(), "pi-permissions-lock-"));
 const concurrentPolicyPath = join(concurrentDir, "pi-permissions.jsonc");
@@ -189,7 +257,7 @@ const markerB = join(concurrentDir, "entered-b");
 const concurrentScript = (marker, key) => `
     import { writeFileSync } from "node:fs";
     import { updatePolicyFile } from ${JSON.stringify(configPath)};
-    updatePolicyFile(${JSON.stringify(concurrentPolicyPath)}, (policy) => {
+    await updatePolicyFile(${JSON.stringify(concurrentPolicyPath)}, (policy) => {
       writeFileSync(${JSON.stringify(marker)}, "entered");
       const wait = new Int32Array(new SharedArrayBuffer(4));
       Atomics.wait(wait, 0, 0, 150);
@@ -234,9 +302,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.equal(existsSync(markerA), true);
-  const lockMetadata = JSON.parse(readFileSync(`${concurrentPolicyPath}.lock`, "utf8"));
-  assert.equal(lockMetadata.pid, firstUpdate.pid);
-  assert.equal(typeof lockMetadata.acquiredAt, "number");
+  assert.equal(existsSync(`${concurrentPolicyPath}.lock`), true);
+  assert.equal(firstUpdate.pid > 0, true);
   const secondUpdate = runConcurrentUpdate(markerB, "second");
   await Promise.all([firstUpdate.done, secondUpdate.done]);
 

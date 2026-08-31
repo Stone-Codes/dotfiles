@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "description": "Simple permission system for Pi coding agent",
   "main": "index.ts",
-  "dependencies": {},
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }
