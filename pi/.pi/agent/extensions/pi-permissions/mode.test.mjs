@@ -75,7 +75,9 @@ const parserScript = `
     assert.equal(isBroadArbitraryExecutionAllow("**", "bash"), true);
     assert.equal(isBroadArbitraryExecutionAllow("Bash(*)", "bash"), true);
     assert.equal(isBroadArbitraryExecutionAllow("bash *", "bash"), true);
-    assert.equal(isBroadArbitraryExecutionAllow("npm test *", "bash"), false);
+    assert.equal(isBroadArbitraryExecutionAllow("bash", "bash"), true);
+    assert.equal(isBroadArbitraryExecutionAllow("npm test", "bash"), false);
+    assert.equal(isBroadArbitraryExecutionAllow("git status", "bash"), false);
     assert.equal(evaluateAutoGate(
       "bash",
       { command: "git reset --hard" },
@@ -216,6 +218,20 @@ const reset = runExtensionScenario(
   `,
 );
 assert.match(reset.statuses.at(-1), /^AUTO/);
+
+const bareBashAllow = runExtensionScenario(
+  {
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+    auto: { allow: ["bash"] },
+  },
+  `
+    await commands.get("perms").handler("mode auto", ctx);
+    const result = await handlers.get("tool_call")({ toolName: "bash", input: { command: "npm install" } }, ctx);
+    assert.match(result.reason, /classifier test denial/);
+    assert.equal(completions, 1);
+  `,
+);
+assert.equal(bareBashAllow.completions, 1);
 
 const manualAllows = runExtensionScenario(
   {

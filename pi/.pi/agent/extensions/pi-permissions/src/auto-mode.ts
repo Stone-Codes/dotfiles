@@ -314,7 +314,7 @@ function matchesPolicy(patterns: string[] | undefined, candidates: string[]): bo
 export function isBroadArbitraryExecutionAllow(pattern: string, toolName: string): boolean {
   if (toolName !== "bash") return false;
   const compact = pattern.trim().replace(/\s+/g, "").toLowerCase();
-  return compact === "*" || compact === "**" || /^bash\*+$/.test(compact) || /^bash\(\*+\)$/.test(compact);
+  return compact === "*" || compact === "**" || compact === "bash" || /^bash\*+$/.test(compact) || /^bash\(\*+\)$/.test(compact);
 }
 
 function sensitiveInput(toolName: string, input: unknown, cwd: string): boolean {
