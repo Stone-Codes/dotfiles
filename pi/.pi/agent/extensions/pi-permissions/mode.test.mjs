@@ -258,6 +258,22 @@ const manualAllows = runExtensionScenario(
 );
 assert.equal(manualAllows.completions, 4);
 
+const permsStatus = runExtensionScenario(
+  {
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+    tools: { read: "allow" },
+  },
+  `
+    await commands.get("perms").handler("", ctx);
+    const bareStatus = notifications.at(-1);
+    await commands.get("perms").handler("status", ctx);
+    assert.equal(notifications.at(-1), bareStatus);
+    assert.match(notifications.at(-1), /^Mode: MANUAL/);
+    notifications.length = 0;
+  `,
+);
+assert.equal(permsStatus.notifications.length, 0);
+
 const fixtureDir = mkdtempSync(join(tmpdir(), "pi-permissions-mode-"));
 const policyPath = join(fixtureDir, "pi-permissions.jsonc");
 const configPath = new URL("./src/config.ts", extensionDir).pathname;

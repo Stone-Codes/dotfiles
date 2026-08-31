@@ -503,8 +503,8 @@ export default function (pi: ExtensionAPI) {
         setMode(parsedMode, ctx);
         return;
       }
-      if (command) {
-        ctx.ui.notify("Usage: /perms [mode <manual|auto|allow-all>]", "error");
+      if (command && command.toLowerCase() !== "status") {
+        ctx.ui.notify("Usage: /perms [status|mode <manual|auto|allow-all>]", "error");
         return;
       }
 
