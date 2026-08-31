@@ -12,6 +12,11 @@ import * as fs from "node:fs";
 const POLICY_FILE = path.join(os.homedir(), ".pi", "agent", "pi-permissions.jsonc");
 const IS_SUBAGENT = process.env.PI_SUBAGENT === "1" || !process.stdin.isTTY;
 
+export function parsePermissionModeCommand(args: string): PermissionMode | undefined {
+  const modeMatch = args.trim().match(/^mode(?:\s+(manual|auto|allow-all))?$/i);
+  return modeMatch?.[1]?.toLowerCase() as PermissionMode | undefined;
+}
+
 /**
  * Check if a bash command is read-only and safe to auto-allow.
  * Allows commands like ls, cat, grep, find, git status, etc.
@@ -463,13 +468,13 @@ export default function (pi: ExtensionAPI) {
     description: "Show or change the current permission mode and policy",
     handler: async (args, ctx) => {
       const command = args?.trim() ?? "";
-      const modeMatch = command.match(/^mode(?:\\s+(manual|auto|allow-all))?$/i);
+      const parsedMode = parsePermissionModeCommand(command);
       if (command.startsWith("mode")) {
-        if (!modeMatch?.[1]) {
+        if (!parsedMode) {
           ctx.ui.notify("Usage: /perms mode <manual|auto|allow-all>", "error");
           return;
         }
-        setMode(modeMatch[1].toLowerCase() as PermissionMode, ctx);
+        setMode(parsedMode, ctx);
         return;
       }
       if (command) {

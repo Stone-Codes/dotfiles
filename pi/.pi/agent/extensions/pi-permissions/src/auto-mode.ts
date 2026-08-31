@@ -296,15 +296,26 @@ function inputCandidates(toolName: string, input: unknown): string[] {
   return candidates;
 }
 
-function matchesPolicy(patterns: string[] | undefined, candidates: string[]): boolean {
-  if (!patterns) return false;
-  return patterns.some((pattern) => candidates.some((candidate) => {
+function matchingPolicyPattern(patterns: string[] | undefined, candidates: string[]): string | undefined {
+  if (!patterns) return undefined;
+  return patterns.find((pattern) => candidates.some((candidate) => {
     try {
       return matchWildcard(pattern, candidate) || matchWildcard(pattern.toLowerCase(), candidate.toLowerCase());
     } catch {
       return false;
     }
   }));
+}
+
+function matchesPolicy(patterns: string[] | undefined, candidates: string[]): boolean {
+  return matchingPolicyPattern(patterns, candidates) !== undefined;
+}
+
+/** Keep broad shell grants behind the classifier, even when listed in auto.allow. */
+function isBroadArbitraryExecutionAllow(pattern: string, toolName: string): boolean {
+  if (toolName !== "bash") return false;
+  const compact = pattern.replace(/\\s+/g, "").toLowerCase();
+  return compact === "*" || compact === "bash" || compact === "bash*" || compact === "bash(*)";
 }
 
 function sensitiveInput(toolName: string, input: unknown, cwd: string): boolean {
@@ -318,7 +329,11 @@ function sensitiveInput(toolName: string, input: unknown, cwd: string): boolean 
 }
 
 function policyCandidates(toolName: string, input: unknown): string[] {
-  return inputCandidates(toolName, input).map((candidate) => candidate.trim()).filter(Boolean);
+  const candidates = inputCandidates(toolName, input).map((candidate) => candidate.trim()).filter(Boolean);
+  if (toolName === "bash" && isRecord(input) && typeof input.command === "string") {
+    candidates.push(`Bash(${input.command})`);
+  }
+  return candidates;
 }
 
 /** Apply only deterministic local rules; all other calls are sent to the classifier. */
@@ -336,6 +351,11 @@ export function evaluateAutoGate(
     return { kind: "block", reason: "sensitive path or secret-bearing input is blocked" };
   }
   if (matchesPolicy(policy.softDeny, candidates)) {
+    const narrowAllow = policy.allow?.find((pattern) => (
+      !isBroadArbitraryExecutionAllow(pattern, toolName) &&
+      matchingPolicyPattern([pattern], candidates) !== undefined
+    ));
+    if (narrowAllow) return { kind: "allow" };
     return { kind: "classify", reason: "matched Auto soft-deny policy" };
   }
 

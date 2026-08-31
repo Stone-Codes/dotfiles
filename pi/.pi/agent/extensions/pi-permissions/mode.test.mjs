@@ -51,6 +51,130 @@ assert.equal(initialState.mode, "manual");
 assert.equal(initialState.consecutiveAutoDenials, 0);
 assert.equal(initialState.totalAutoDenials, 0);
 
+const parserLoaderDir = mkdtempSync(join(tmpdir(), "pi-permissions-parser-"));
+const parserLoaderPath = join(parserLoaderDir, "loader.mjs");
+writeFileSync(parserLoaderPath, `export async function resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith(".") && !specifier.match(/\\.[a-z]+$/)) return nextResolve(specifier + ".ts", context);
+    return nextResolve(specifier, context);
+  }\n`);
+const parserScript = `
+    import assert from "node:assert/strict";
+    import { parsePermissionModeCommand } from ${JSON.stringify(new URL("./index.ts", extensionDir).pathname)};
+    assert.equal(parsePermissionModeCommand("mode manual"), "manual");
+    assert.equal(parsePermissionModeCommand(" mode AUTO "), "auto");
+    assert.equal(parsePermissionModeCommand("mode allow-all"), "allow-all");
+    assert.equal(parsePermissionModeCommand("mode nope"), undefined);
+    console.log("permission mode parser passed");
+  `;
+const parserResult = spawnSync(
+  process.execPath,
+  ["--experimental-strip-types", "--experimental-loader", parserLoaderPath, "--input-type=module", "--eval", parserScript],
+  { cwd: extensionDir.pathname, encoding: "utf8" },
+);
+rmSync(parserLoaderDir, { recursive: true, force: true });
+assert.equal(parserResult.status, 0, parserResult.stderr || parserResult.stdout);
+assert.match(parserResult.stdout, /permission mode parser passed/);
+
+function runExtensionScenario(policy, scenario) {
+  const scenarioDir = mkdtempSync(join(tmpdir(), "pi-permissions-extension-"));
+  const homeDir = join(scenarioDir, "home");
+  mkdirSync(join(homeDir, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(homeDir, ".pi", "agent", "pi-permissions.jsonc"), `${JSON.stringify(policy)}\n`);
+  const loaderPath = join(scenarioDir, "loader.mjs");
+  writeFileSync(loaderPath, `export async function resolve(specifier, context, nextResolve) {
+      if (specifier.startsWith(".") && !specifier.match(/\\.[a-z]+$/)) return nextResolve(specifier + ".ts", context);
+      return nextResolve(specifier, context);
+    }\n`);
+  const script = `
+    import assert from "node:assert/strict";
+    import extension from ${JSON.stringify(new URL("./index.ts", extensionDir).pathname)};
+    const handlers = new Map();
+    const commands = new Map();
+    const statuses = [];
+    const notifications = [];
+    let completions = 0;
+    const pi = {
+      on(name, handler) { handlers.set(name, handler); },
+      registerCommand(name, command) { commands.set(name, command); },
+      getAllTools() { return [{ name: "read" }, { name: "write" }, { name: "bash" }]; },
+      setActiveTools() {},
+    };
+    extension(pi);
+    const model = { provider: "test", id: "classifier" };
+    const ctx = {
+      cwd: "/repo",
+      hasUI: false,
+      model,
+      ui: {
+        setStatus(_id, text) { statuses.push(text); },
+        notify(message) { notifications.push(message); },
+        async confirm() { return false; },
+        async select() { return "No"; },
+      },
+      sessionManager: { getBranch() { return []; } },
+      modelRegistry: {
+        find(provider, id) { return provider === model.provider && id === model.id ? model : undefined; },
+        getAvailable() { return [model]; },
+        async complete() {
+          completions += 1;
+          return { content: [{ type: "text", text: JSON.stringify({ decision: "block", reason: "classifier test denial" }) }] };
+        },
+      },
+    };
+    await handlers.get("session_start")({}, ctx);
+    ${scenario}
+    console.log(JSON.stringify({ statuses, notifications, completions }));
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--experimental-loader", loaderPath, "--input-type=module", "--eval", script],
+    { cwd: extensionDir.pathname, env: { ...process.env, HOME: homeDir }, encoding: "utf8" },
+  );
+  rmSync(scenarioDir, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return JSON.parse(result.stdout.trim().split("\\n").at(-1));
+}
+
+const dispatch = runExtensionScenario(
+  {
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+    tools: { execute: "deny" },
+    auto: { softDeny: ["write", "Bash(*)"], allow: ["write", "Bash(*)"] },
+  },
+  `
+    await commands.get("perms").handler("mode auto", ctx);
+    const allowed = await handlers.get("tool_call")({ toolName: "write", input: { path: "src/file.ts", content: "x" } }, ctx);
+    assert.equal(allowed, undefined);
+    const denied = await handlers.get("tool_call")({ toolName: "execute", input: { command: "run" } }, ctx);
+    assert.match(denied.reason, /permission policy/);
+    const broadBash = await handlers.get("tool_call")({ toolName: "bash", input: { command: "npm install" } }, ctx);
+    assert.match(broadBash.reason, /classifier test denial/);
+    assert.equal(completions, 1);
+  `,
+);
+assert.equal(dispatch.completions, 1);
+assert.match(dispatch.statuses.at(-1), /^AUTO/);
+
+const reset = runExtensionScenario(
+  {
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+  },
+  `
+    await commands.get("perms-allow-similar").handler("write", ctx);
+    await commands.get("perms").handler("mode auto", ctx);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await handlers.get("tool_call")({ toolName: "write", input: { path: "src/file.ts", content: "x" } }, ctx);
+      assert.match(result.reason, /classifier test denial/);
+    }
+    await commands.get("perms").handler("mode manual", ctx);
+    await commands.get("perms").handler("mode auto", ctx);
+    const afterReset = await handlers.get("tool_call")({ toolName: "write", input: { path: "src/file.ts", content: "x" } }, ctx);
+    assert.match(afterReset.reason, /classifier test denial/);
+    assert.match(statuses.at(-1), /^AUTO/);
+  `,
+);
+assert.match(reset.statuses.at(-1), /^AUTO/);
+
 const fixtureDir = mkdtempSync(join(tmpdir(), "pi-permissions-mode-"));
 const policyPath = join(fixtureDir, "pi-permissions.jsonc");
 const configPath = new URL("./src/config.ts", extensionDir).pathname;
