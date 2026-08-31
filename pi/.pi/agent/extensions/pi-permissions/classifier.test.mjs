@@ -107,7 +107,10 @@ const script = `
   );
   assert.equal(request.messages[0].role, "user");
   const serializedRequest = JSON.stringify(request);
-  assert.equal(serializedRequest.includes(expectedBoundedUserContext), true);
+  const contextMatch = request.messages[0].content.match(/^Recent user context:\\n([\\s\\S]*?)\\n\\nWorking directory:/);
+  assert.ok(contextMatch);
+  assert.equal(contextMatch[1].length, 12_000);
+  assert.equal(contextMatch[1], expectedBoundedUserContext);
   assert.doesNotMatch(serializedRequest, /abc123/);
   assert.doesNotMatch(serializedRequest, /old-user-context-that-must-be-trimmed/);
   assert.doesNotMatch(serializedRequest, /assistant-boundary-secret/);
