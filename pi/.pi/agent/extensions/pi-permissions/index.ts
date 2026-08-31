@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadPolicy, checkToolPermission, checkBashPermission, checkSkillPermission, checkMcpPermission, deriveMcpTarget } from "./src/permission-manager";
 import { updatePolicyFile } from "./src/config";
-import { evaluateAutoGate, recordAutoDenial, resetAutoDenials } from "./src/auto-mode";
+import { evaluateAutoGate, isBroadArbitraryExecutionAllow, recordAutoDenial, resetAutoDenials } from "./src/auto-mode";
 import { buildClassifierRequest, classifyToolCall } from "./src/classifier";
 import { getLogPath, logAutoDenial } from "./src/logging";
-import { createInitialSessionPermissionState, type PermissionMode, type SessionPermissionState, type ClassifierContext } from "./types";
+import { createInitialSessionPermissionState, type PermissionMode, type PermissionPolicy, type SessionPermissionState, type ClassifierContext } from "./types";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -15,6 +15,32 @@ const IS_SUBAGENT = process.env.PI_SUBAGENT === "1" || !process.stdin.isTTY;
 export function parsePermissionModeCommand(args: string): PermissionMode | undefined {
   const modeMatch = args.trim().match(/^mode(?:\s+(manual|auto|allow-all))?$/i);
   return modeMatch?.[1]?.toLowerCase() as PermissionMode | undefined;
+}
+
+/**
+ * Return whether an existing explicit Manual allow is narrow enough to bypass
+ * Auto classification. Default allows and broad execution grants stay gated.
+ */
+export function isSafeManualAllowMatch(policy: PermissionPolicy, toolName: string, input: unknown): boolean {
+  if (["read", "grep", "find", "ls"].includes(toolName)) {
+    const check = checkToolPermission(policy, toolName);
+    return check.source === "tool" && check.state === "allow";
+  }
+
+  if (toolName === "mcp" && typeof input === "object" && input !== null && !Array.isArray(input)) {
+    const mcpTarget = deriveMcpTarget(input as Record<string, any>);
+    const check = checkMcpPermission(policy, mcpTarget);
+    return check.source === "mcp" && check.state === "allow" && check.matchedPattern === mcpTarget && !/[?*\[\]]/.test(check.matchedPattern);
+  }
+
+  if (toolName === "bash" && typeof input === "object" && input !== null && !Array.isArray(input)) {
+    const command = (input as Record<string, unknown>).command;
+    if (typeof command !== "string") return false;
+    const check = checkBashPermission(policy, command);
+    return check.source === "bash" && check.state === "allow" && !!check.matchedPattern && !isBroadArbitraryExecutionAllow(check.matchedPattern, toolName);
+  }
+
+  return false;
 }
 
 /**
@@ -190,12 +216,12 @@ export default function (pi: ExtensionAPI) {
     }
 
     const gate = evaluateAutoGate(toolName, input, ctx.cwd, policy.auto ?? {});
-    if (gate.kind === "allow") {
-      Object.assign(sessionState, resetAutoDenials(sessionState));
-      return;
-    }
     if (gate.kind === "block") {
       return autoBlock(event, gate.reason ?? "deterministic Auto policy blocked this action", { command, mcpTarget });
+    }
+    if (gate.kind === "allow" || isSafeManualAllowMatch(policy, toolName, input)) {
+      Object.assign(sessionState, resetAutoDenials(sessionState));
+      return;
     }
 
     const autoPolicy = policy.auto ?? {};

@@ -296,9 +296,8 @@ function inputCandidates(toolName: string, input: unknown): string[] {
   return candidates;
 }
 
-function matchingPolicyPattern(patterns: string[] | undefined, candidates: string[]): string | undefined {
-  if (!patterns) return undefined;
-  return patterns.find((pattern) => candidates.some((candidate) => {
+export function matchingPolicyPattern(patterns: string[] | undefined, candidates: string[]): string | undefined {
+  return patterns?.find((pattern) => candidates.some((candidate) => {
     try {
       return matchWildcard(pattern, candidate) || matchWildcard(pattern.toLowerCase(), candidate.toLowerCase());
     } catch {
@@ -311,11 +310,11 @@ function matchesPolicy(patterns: string[] | undefined, candidates: string[]): bo
   return matchingPolicyPattern(patterns, candidates) !== undefined;
 }
 
-/** Keep broad shell grants behind the classifier, even when listed in auto.allow. */
-function isBroadArbitraryExecutionAllow(pattern: string, toolName: string): boolean {
+/** Keep broad shell grants behind the classifier, even when listed in an allow policy. */
+export function isBroadArbitraryExecutionAllow(pattern: string, toolName: string): boolean {
   if (toolName !== "bash") return false;
-  const compact = pattern.replace(/\\s+/g, "").toLowerCase();
-  return compact === "*" || compact === "bash" || compact === "bash*" || compact === "bash(*)";
+  const compact = pattern.trim().replace(/\s+/g, "").toLowerCase();
+  return compact === "*" || compact === "**" || /^bash\*+$/.test(compact) || /^bash\(\*+\)$/.test(compact);
 }
 
 function sensitiveInput(toolName: string, input: unknown, cwd: string): boolean {
@@ -344,25 +343,31 @@ export function evaluateAutoGate(
   policy: AutoPolicy,
 ): AutoGateResult {
   const candidates = policyCandidates(toolName, input);
-  if (matchesPolicy(policy.hardDeny, candidates)) {
-    return { kind: "block", reason: "blocked by Auto hard-deny policy" };
+
+  // Local hard blocks must run before either allow policy. An allow exception
+  // can never authorize destructive commands or sensitive input.
+  if (toolName === "bash") {
+    const command = isRecord(input) && typeof input.command === "string" ? input.command : "";
+    const hardReason = hardBlockedBashReason(command);
+    if (hardReason) return { kind: "block", reason: hardReason };
   }
   if (sensitiveInput(toolName, input, cwd)) {
     return { kind: "block", reason: "sensitive path or secret-bearing input is blocked" };
   }
+  if (matchesPolicy(policy.hardDeny, candidates)) {
+    return { kind: "block", reason: "blocked by Auto hard-deny policy" };
+  }
+
+  const autoAllow = matchingPolicyPattern(policy.allow, candidates);
+  if (autoAllow && !isBroadArbitraryExecutionAllow(autoAllow, toolName)) {
+    return { kind: "allow" };
+  }
   if (matchesPolicy(policy.softDeny, candidates)) {
-    const narrowAllow = policy.allow?.find((pattern) => (
-      !isBroadArbitraryExecutionAllow(pattern, toolName) &&
-      matchingPolicyPattern([pattern], candidates) !== undefined
-    ));
-    if (narrowAllow) return { kind: "allow" };
     return { kind: "classify", reason: "matched Auto soft-deny policy" };
   }
 
   if (toolName === "bash") {
     const command = isRecord(input) && typeof input.command === "string" ? input.command : "";
-    const hardReason = hardBlockedBashReason(command);
-    if (hardReason) return { kind: "block", reason: hardReason };
     if (isSafeReadOnlyBashCommand(command)) return { kind: "allow" };
     return { kind: "classify", reason: "bash command requires classification" };
   }

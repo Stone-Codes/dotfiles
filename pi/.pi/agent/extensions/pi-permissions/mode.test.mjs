@@ -59,11 +59,50 @@ writeFileSync(parserLoaderPath, `export async function resolve(specifier, contex
   }\n`);
 const parserScript = `
     import assert from "node:assert/strict";
-    import { parsePermissionModeCommand } from ${JSON.stringify(new URL("./index.ts", extensionDir).pathname)};
+    import { isSafeManualAllowMatch, parsePermissionModeCommand } from ${JSON.stringify(new URL("./index.ts", extensionDir).pathname)};
+    import {
+      evaluateAutoGate,
+      isBroadArbitraryExecutionAllow,
+      matchingPolicyPattern,
+    } from ${JSON.stringify(new URL("./src/auto-mode.ts", extensionDir).pathname)};
     assert.equal(parsePermissionModeCommand("mode manual"), "manual");
     assert.equal(parsePermissionModeCommand(" mode AUTO "), "auto");
     assert.equal(parsePermissionModeCommand("mode allow-all"), "allow-all");
     assert.equal(parsePermissionModeCommand("mode nope"), undefined);
+
+    assert.equal(matchingPolicyPattern(["write", "Bash(*)"], ["write"]), "write");
+    assert.equal(isBroadArbitraryExecutionAllow("*", "bash"), true);
+    assert.equal(isBroadArbitraryExecutionAllow("**", "bash"), true);
+    assert.equal(isBroadArbitraryExecutionAllow("Bash(*)", "bash"), true);
+    assert.equal(isBroadArbitraryExecutionAllow("bash *", "bash"), true);
+    assert.equal(isBroadArbitraryExecutionAllow("npm test *", "bash"), false);
+    assert.equal(evaluateAutoGate(
+      "bash",
+      { command: "git reset --hard" },
+      "/repo",
+      { softDeny: ["Bash(*)"], allow: ["Bash(*)"] },
+    ).kind, "block");
+    assert.equal(evaluateAutoGate(
+      "write",
+      { path: "src/file.ts", content: "x" },
+      "/repo",
+      { allow: ["write"] },
+    ).kind, "allow");
+
+    const manualAllowPolicy = {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+      tools: { read: "allow", write: "allow", edit: "allow" },
+      bash: { "*": "allow", "npm test": "allow" },
+      mcp: { "docs:*": "allow", "docs:search": "allow" },
+    };
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "read", { path: "src/file.ts" }), true);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "write", { path: "src/file.ts" }), false);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "edit", { path: "src/file.ts" }), false);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "bash", { command: "npm test" }), true);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "bash", { command: "npm install" }), false);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "mcp", { server: "docs", tool: "search" }), true);
+    assert.equal(isSafeManualAllowMatch(manualAllowPolicy, "mcp", { server: "docs", tool: "write" }), false);
+
     console.log("permission mode parser passed");
   `;
 const parserResult = spawnSync(
@@ -147,6 +186,9 @@ const dispatch = runExtensionScenario(
     assert.equal(allowed, undefined);
     const denied = await handlers.get("tool_call")({ toolName: "execute", input: { command: "run" } }, ctx);
     assert.match(denied.reason, /permission policy/);
+    const hardBlocked = await handlers.get("tool_call")({ toolName: "bash", input: { command: "git reset --hard" } }, ctx);
+    assert.match(hardBlocked.reason, /hard git reset/);
+    assert.equal(completions, 0);
     const broadBash = await handlers.get("tool_call")({ toolName: "bash", input: { command: "npm install" } }, ctx);
     assert.match(broadBash.reason, /classifier test denial/);
     assert.equal(completions, 1);
@@ -174,6 +216,31 @@ const reset = runExtensionScenario(
   `,
 );
 assert.match(reset.statuses.at(-1), /^AUTO/);
+
+const manualAllows = runExtensionScenario(
+  {
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask" },
+    tools: { read: "allow", write: "allow", edit: "allow" },
+    bash: { "*": "allow", "npm test": "allow" },
+    mcp: { "docs:*": "allow", "docs:search": "allow" },
+  },
+  `
+    await commands.get("perms").handler("mode auto", ctx);
+    assert.equal(await handlers.get("tool_call")({ toolName: "read", input: { path: "src/file.ts" } }, ctx), undefined);
+    const write = await handlers.get("tool_call")({ toolName: "write", input: { path: "src/file.ts", content: "x" } }, ctx);
+    assert.match(write.reason, /classifier test denial/);
+    const edit = await handlers.get("tool_call")({ toolName: "edit", input: { path: "src/file.ts", oldText: "x", newText: "y" } }, ctx);
+    assert.match(edit.reason, /classifier test denial/);
+    assert.equal(await handlers.get("tool_call")({ toolName: "bash", input: { command: "npm test" } }, ctx), undefined);
+    const broadBash = await handlers.get("tool_call")({ toolName: "bash", input: { command: "npm install" } }, ctx);
+    assert.match(broadBash.reason, /classifier test denial/);
+    assert.equal(await handlers.get("tool_call")({ toolName: "mcp", input: { server: "docs", tool: "search" } }, ctx), undefined);
+    const broadMcp = await handlers.get("tool_call")({ toolName: "mcp", input: { server: "docs", tool: "write" } }, ctx);
+    assert.match(broadMcp.reason, /classifier test denial/);
+    assert.equal(completions, 4);
+  `,
+);
+assert.equal(manualAllows.completions, 4);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "pi-permissions-mode-"));
 const policyPath = join(fixtureDir, "pi-permissions.jsonc");
