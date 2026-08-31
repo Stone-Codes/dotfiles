@@ -114,9 +114,15 @@ const stalePolicyPath = join(staleLockDir, "pi-permissions.jsonc");
 const staleLockPath = `${stalePolicyPath}.lock`;
 try {
   writeFileSync(stalePolicyPath, "{}\n");
-  writeFileSync(staleLockPath, "not valid lock metadata\n");
+  const deadOwnerMetadata = {
+    pid: 999999999,
+    acquiredAt: Date.now() - 60_000,
+  };
+  writeFileSync(staleLockPath, JSON.stringify(deadOwnerMetadata));
+  writeFileSync(`${staleLockPath}.recovery`, JSON.stringify(deadOwnerMetadata));
   const staleTime = new Date(0);
   utimesSync(staleLockPath, staleTime, staleTime);
+  utimesSync(`${staleLockPath}.recovery`, staleTime, staleTime);
 
   const staleScript = `
     import { updatePolicyFile } from ${JSON.stringify(configPath)};
@@ -133,9 +139,48 @@ try {
   assert.equal(staleResult.status, 0, staleResult.stderr || staleResult.stdout);
   assert.equal(JSON.parse(readFileSync(stalePolicyPath, "utf8")).auto.recovered, true);
   assert.equal(existsSync(staleLockPath), false);
+  assert.equal(existsSync(`${staleLockPath}.recovery`), false);
 } finally {
   rmSync(staleLockDir, { recursive: true, force: true });
 }
+
+function assertLockPreserved(label, metadata) {
+  const fixtureDir = mkdtempSync(join(tmpdir(), `pi-permissions-${label}-`));
+  const policyPath = join(fixtureDir, "pi-permissions.jsonc");
+  const lockPath = `${policyPath}.lock`;
+  try {
+    writeFileSync(policyPath, "{}\n");
+    const serializedMetadata = JSON.stringify(metadata);
+    writeFileSync(lockPath, serializedMetadata);
+
+    const blockedScript = `
+      import { updatePolicyFile } from ${JSON.stringify(configPath)};
+      updatePolicyFile(${JSON.stringify(policyPath)}, (policy) => {
+        policy.auto ??= {};
+        policy.auto.shouldNotPersist = true;
+      });
+    `;
+    const result = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "--eval", blockedScript],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0, `${label} lock unexpectedly allowed an update`);
+    assert.equal(readFileSync(lockPath, "utf8"), serializedMetadata);
+    assert.equal(existsSync(`${lockPath}.recovery`), false);
+  } finally {
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+assertLockPreserved("fresh-lock", {
+  pid: process.pid,
+  acquiredAt: Date.now(),
+});
+assertLockPreserved("stale-live-lock", {
+  pid: process.pid,
+  acquiredAt: Date.now() - 60_000,
+});
 
 const concurrentDir = mkdtempSync(join(tmpdir(), "pi-permissions-lock-"));
 const concurrentPolicyPath = join(concurrentDir, "pi-permissions.jsonc");

@@ -78,6 +78,7 @@ const LOCK_RETRY_ATTEMPTS = 50;
 const LOCK_INITIAL_BACKOFF_MS = 10;
 const LOCK_MAX_BACKOFF_MS = 100;
 const LOCK_STALE_AFTER_MS = 30_000;
+const RECOVERY_MARKER_SUFFIX = ".recovery";
 
 type LockMetadata = {
   pid: number;
@@ -162,33 +163,44 @@ function removeStaleLock(lockPath: string): boolean {
   }
 }
 
-function acquireLock(lockPath: string): number {
+function writeLockMetadata(lockFd: number): void {
+  writeFileSync(
+    lockFd,
+    JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }),
+    { encoding: "utf8" },
+  );
+}
+
+function releaseRecoveryMarker(markerPath: string, markerFd: number): void {
+  try {
+    closeSync(markerFd);
+  } catch {
+    // Continue cleanup even if closing the descriptor fails.
+  }
+  try {
+    unlinkSync(markerPath);
+  } catch {
+    // Preserve the original operation error when cleanup cannot remove the marker.
+  }
+}
+
+function acquireRecoveryMarker(markerPath: string): number {
   for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
-    let lockFd: number | undefined;
+    let markerFd: number | undefined;
     try {
-      lockFd = openSync(lockPath, "wx", 0o600);
-      writeFileSync(
-        lockFd,
-        JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }),
-        { encoding: "utf8" },
-      );
-      return lockFd;
+      markerFd = openSync(markerPath, "wx", 0o600);
+      writeLockMetadata(markerFd);
+      return markerFd;
     } catch (error) {
-      if (lockFd !== undefined) {
-        try {
-          closeSync(lockFd);
-        } finally {
-          try {
-            unlinkSync(lockPath);
-          } catch {
-            // Preserve the metadata write error.
-          }
-        }
+      if (markerFd !== undefined) {
+        releaseRecoveryMarker(markerPath, markerFd);
       }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      if (removeStaleLock(lockPath)) {
+      // A crashed claimant can leave the marker behind. Use the same
+      // timestamp/PID validation as policy locks before reclaiming it.
+      if (removeStaleLock(markerPath)) {
         continue;
       }
       if (attempt === LOCK_RETRY_ATTEMPTS - 1) {
@@ -202,7 +214,66 @@ function acquireLock(lockPath: string): number {
     }
   }
 
-  throw new Error(`Timed out acquiring policy lock ${lockPath}`);
+  throw new Error(`Timed out acquiring policy recovery marker ${markerPath}`);
+}
+
+function acquireLock(lockPath: string): number {
+  const markerPath = `${lockPath}${RECOVERY_MARKER_SUFFIX}`;
+  let markerFd: number | undefined;
+
+  try {
+    // Every contender takes this gate before touching the policy lock. This
+    // closes the stale-check/unlink gap: only its claimant can remove a stale
+    // lock and acquire the replacement while other cooperating contenders wait.
+    markerFd = acquireRecoveryMarker(markerPath);
+
+    for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
+      let lockFd: number | undefined;
+      try {
+        lockFd = openSync(lockPath, "wx", 0o600);
+        writeLockMetadata(lockFd);
+        const acquiredLockFd = lockFd;
+        lockFd = undefined;
+        releaseRecoveryMarker(markerPath, markerFd);
+        markerFd = undefined;
+        return acquiredLockFd;
+      } catch (error) {
+        if (lockFd !== undefined) {
+          try {
+            closeSync(lockFd);
+          } finally {
+            try {
+              unlinkSync(lockPath);
+            } catch {
+              // Preserve the metadata write error.
+            }
+          }
+        }
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
+        // The recovery marker is held for the entire stale takeover attempt,
+        // so this unlink is not reachable by another cooperating contender.
+        if (removeStaleLock(lockPath)) {
+          continue;
+        }
+        if (attempt === LOCK_RETRY_ATTEMPTS - 1) {
+          break;
+        }
+        const backoff = Math.min(
+          LOCK_INITIAL_BACKOFF_MS * 2 ** attempt,
+          LOCK_MAX_BACKOFF_MS,
+        );
+        sleepSync(backoff);
+      }
+    }
+
+    throw new Error(`Timed out acquiring policy lock ${lockPath}`);
+  } finally {
+    if (markerFd !== undefined) {
+      releaseRecoveryMarker(markerPath, markerFd);
+    }
+  }
 }
 
 function readPolicy(filePath: string): PolicyDocument {
