@@ -282,7 +282,8 @@ const permsStatus = runExtensionScenario(
     assert.equal(notifications.at(-1), autoStatus);
   `,
 );
-assert.equal(permsStatus.notifications.length, 0);
+assert.equal(permsStatus.notifications.length, 1);
+assert.match(permsStatus.notifications.at(-1), /^Mode: AUTO/);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "pi-permissions-mode-"));
 const policyPath = join(fixtureDir, "pi-permissions.jsonc");
