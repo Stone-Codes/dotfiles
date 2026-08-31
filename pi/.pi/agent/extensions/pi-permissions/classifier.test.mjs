@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+
+const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
+const examplePolicy = readFileSync(new URL("./pi-permissions.example.jsonc", import.meta.url), "utf8");
+for (const documentation of [readme, examplePolicy]) {
+  assert.match(documentation, /\/perms mode auto/);
+  assert.match(documentation, /\/perms mode allow-all/);
+  assert.match(documentation, /\/auto-model/);
+  assert.match(documentation, /classifierModel/);
+  assert.match(documentation, /session-only/);
+}
 
 const modulePath = new URL("./src/auto-mode.ts", import.meta.url).pathname;
 const script = `

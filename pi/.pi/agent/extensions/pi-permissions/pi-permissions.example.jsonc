@@ -1,3 +1,10 @@
+// Permission mode is session-only and starts in Manual for every new Pi session.
+// Use /perms mode manual, /perms mode auto, or /perms mode allow-all deliberately.
+// /auto and /auto on|off control Auto; /auto-model selects its classifier model.
+// Auto classifier input excludes raw tool results. Interactive classifier failures
+// fall back to Manual confirmation; headless failures block the action.
+// Auto returns to Manual after three consecutive or twenty total denials.
+// Allow-all bypasses every permission check for the current session.
 {
   "defaultPolicy": {
     "tools": "ask",
@@ -28,5 +35,24 @@
   },
   "skills": {
     "*": "ask"
+  },
+  "auto": {
+    "classifierModel": {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-5"
+    },
+    "hardDeny": [
+      "Never read or write credentials, private keys, or secret files.",
+      "Never perform irreversible production deletion."
+    ],
+    "softDeny": [
+      "Do not communicate externally unless the user explicitly requests it."
+    ],
+    "allow": [
+      "Allow the repository's declared test and formatter commands."
+    ],
+    "environment": [
+      "The current working repository and its configured remotes are trusted."
+    ]
   }
 }
