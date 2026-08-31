@@ -190,9 +190,28 @@ function splitShell(command: string, separators: string[]): string[] {
   return segments;
 }
 
+function hasWriteCapableArguments(words: string[]): boolean {
+  const executable = words[0].toLowerCase();
+  const subcommand = words[1]?.toLowerCase();
+  const outputShortOptionCommand = executable === "git" && subcommand === "diff"
+    ? true
+    : new Set(["sort", "uniq", "diff"]).has(executable);
+
+  return words.slice(1).some((word) => {
+    if (/^--(?:output(?:-file)?|in-place|delete|exec(?:dir)?|remove|replace|backup|append|write(?:-to)?|modify|move|copy|rename|unlink)(?:=|$)/i.test(word)) {
+      return true;
+    }
+    if (executable === "find" && /^-(?:delete|exec(?:dir)?|ok(?:dir)?|fls|fprint(?:0)?|fprintf)$/.test(word)) {
+      return true;
+    }
+    if (outputShortOptionCommand && /^-o/i.test(word)) return true;
+    return false;
+  });
+}
+
 function isSafeReadOnlyStage(stage: string): boolean {
   const words = shellWords(stage);
-  if (words.length === 0) return false;
+  if (words.length === 0 || hasWriteCapableArguments(words)) return false;
 
   const executable = words[0].toLowerCase();
   if (executable === "git") {
@@ -332,6 +351,25 @@ export function evaluateAutoGate(
   return { kind: "classify", reason: "tool requires classification" };
 }
 
+function isSensitiveObjectKey(key: string): boolean {
+  const normalizedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return /(?:password|passwd|passphrase|apikey|accesskey|secret|token|clientsecret|privatekey|authorization|credential|auth)/.test(normalizedKey);
+}
+
+function redactSensitiveJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitiveJsonValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        isSensitiveObjectKey(key) ? "[REDACTED]" : redactSensitiveJsonValue(nestedValue),
+      ]),
+    );
+  }
+  if (typeof value === "string") return redactSensitiveText(value);
+  return value;
+}
+
 function redactedSecretAssignments(value: string): string {
   return value.replace(
     /(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key)\b["']?\s*[:=]\s*)(["']?)([^\s"'`,;}&]+)(["']?)/gi,
@@ -352,6 +390,16 @@ function redactedSensitivePaths(value: string): string {
 /** Remove credentials while retaining safe labels and command structure. */
 export function redactSensitiveText(value: string): string {
   if (typeof value !== "string") return String(value);
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (isRecord(parsed) || Array.isArray(parsed)) {
+      return JSON.stringify(redactSensitiveJsonValue(parsed));
+    }
+  } catch {
+    // Treat non-JSON input as text below.
+  }
+
   let redacted = value.replace(
     /(\bauthorization\s*:\s*(?:bearer|basic)\s+)[^\s,;]+/gi,
     "$1[REDACTED]",

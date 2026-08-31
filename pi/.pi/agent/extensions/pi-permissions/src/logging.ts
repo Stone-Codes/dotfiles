@@ -13,20 +13,9 @@ function ensureLogDir(): void {
   }
 }
 
-function redactLogValue(value: unknown): unknown {
-  if (typeof value === "string") return redactSensitiveText(value);
-  if (Array.isArray(value)) return value.map(redactLogValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [key, redactLogValue(nestedValue)]),
-    );
-  }
-  return value;
-}
-
 export function logPermissionCheck(entry: PermissionLogEntry): void {
   ensureLogDir();
-  const safeEntry = redactLogValue(entry) as PermissionLogEntry;
+  const safeEntry = JSON.parse(redactSensitiveText(JSON.stringify(entry))) as PermissionLogEntry;
   const line = JSON.stringify(safeEntry) + "\n";
   fs.appendFileSync(LOG_FILE, line, "utf-8");
 }

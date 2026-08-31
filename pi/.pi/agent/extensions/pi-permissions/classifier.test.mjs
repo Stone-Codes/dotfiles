@@ -18,9 +18,36 @@ const script = `
   assert.equal(isSafeReadOnlyBash("git status --short"), true);
   assert.equal(isSafeReadOnlyBash("git status --short > status.txt"), false);
   assert.equal(isSafeReadOnlyBash("git reset --hard"), false);
+  assert.equal(isSafeReadOnlyBash("sort -oout.txt input.txt"), false);
+  assert.equal(isSafeReadOnlyBash("sort --output=out.txt input.txt"), false);
+  assert.equal(isSafeReadOnlyBash("uniq -ofile input.txt"), false);
+  assert.equal(isSafeReadOnlyBash("git diff --output=out.txt"), false);
+  assert.equal(isSafeReadOnlyBash("git diff -o out.txt"), false);
+  assert.equal(isSafeReadOnlyBash("find . -exec cat {} \\;"), false);
+  assert.equal(isSafeReadOnlyBash("find . -delete"), false);
+  assert.equal(isSafeReadOnlyBash("sed -i s/old/new/ input.txt"), false);
   assert.equal(evaluateAutoGate("read", { path: ".env" }, "/repo", {}).kind, "block");
   assert.equal(evaluateAutoGate("grep", { pattern: "x", path: "src" }, "/repo", {}).kind, "allow");
   assert.equal(redactSensitiveText("Authorization: Bearer abc123"), "Authorization: Bearer [REDACTED]");
+
+  const redactedJson = redactSensitiveText(JSON.stringify({
+    password: "nested-password",
+    nested: {
+      apiKey: "nested-api-key",
+      metadata: { token: "nested-token", safe: "visible" },
+    },
+    authorization: "Bearer nested-bearer-token",
+  }));
+  const parsedRedactedJson = JSON.parse(redactedJson);
+  assert.deepEqual(parsedRedactedJson, {
+    password: "[REDACTED]",
+    nested: {
+      apiKey: "[REDACTED]",
+      metadata: { token: "[REDACTED]", safe: "visible" },
+    },
+    authorization: "[REDACTED]",
+  });
+  assert.doesNotMatch(redactedJson, /nested-(?:password|api-key|token|bearer-token)/);
 
   assert.equal(evaluateAutoGate("ls", { path: ".pi/agent/auth.json" }, "/repo", {}).kind, "block");
   assert.equal(evaluateAutoGate("bash", { command: "git clean -fdx" }, "/repo", {}).kind, "block");
