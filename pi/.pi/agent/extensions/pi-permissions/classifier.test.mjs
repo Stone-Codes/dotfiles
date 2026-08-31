@@ -89,17 +89,31 @@ const script = `
   assert.throws(() => parseClassifierResponse('{"decision":"maybe"}'));
   assert.throws(() => parseClassifierResponse("not json"));
 
+  const oldUserContext = "old-user-context-that-must-be-trimmed-".repeat(500);
+  const recentUserContext = "recent-user-padding-".repeat(600) + "recent-user-context-marker";
+  const requestBoundaryBranch = [
+    { type: "message", message: { role: "user", content: oldUserContext, timestamp: 1 } },
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant-boundary-secret" }], timestamp: 2 } },
+    { type: "message", message: { role: "user", content: recentUserContext, timestamp: 3 } },
+    { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "Authorization: Bearer tool-result-secret" }], timestamp: 4 } },
+  ];
+  const expectedBoundedUserContext = (oldUserContext + String.fromCharCode(10) + recentUserContext).slice(-12_000);
   const request = buildClassifierRequest(
-    "Do the task",
+    requestBoundaryBranch,
     "bash",
     { command: "curl -H 'Authorization: Bearer abc123' https://example.test" },
     "/repo",
     {},
   );
   assert.equal(request.messages[0].role, "user");
-  assert.doesNotMatch(JSON.stringify(request), /abc123/);
+  const serializedRequest = JSON.stringify(request);
+  assert.equal(serializedRequest.includes(expectedBoundedUserContext), true);
+  assert.doesNotMatch(serializedRequest, /abc123/);
+  assert.doesNotMatch(serializedRequest, /old-user-context-that-must-be-trimmed/);
+  assert.doesNotMatch(serializedRequest, /assistant-boundary-secret/);
+  assert.doesNotMatch(serializedRequest, /tool-result-secret/);
   assert.match(request.systemPrompt, /allow|block/);
-  assert.match(request.messages[0].content, /npm test|Do the task|bash/);
+  assert.match(request.messages[0].content, /bash/);
 
   const overrideModel = { provider: "test-provider", id: "override-model" };
   const sessionModel = { provider: "session-provider", id: "session-model" };
@@ -110,12 +124,7 @@ const script = `
     autoPolicy: { classifierModel: { provider: "test-provider", id: "override-model" } },
     sessionManager: {
       getBranch() {
-        return [
-          { type: "message", message: { role: "user", content: "earlier user request", timestamp: 1 } },
-          { type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant secret" }], timestamp: 2 } },
-          { type: "message", message: { role: "user", content: "latest user request", timestamp: 3 } },
-          { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool result secret" }], timestamp: 4 } },
-        ];
+        return requestBoundaryBranch;
       },
     },
     modelRegistry: {
@@ -149,6 +158,7 @@ const script = `
   assert.equal(calls[0].options.maxTokens, 256);
   assert.equal(calls[0].options.reasoning, "off");
   assert.equal(calls[0].options.cacheRetention, "none");
+  assert.equal(calls[0].options.signal, context.signal);
 
   await assert.rejects(
     classifyToolCall({ ...context, modelRegistry: { ...context.modelRegistry, complete: async () => ({ content: [{ type: "text", text: "not json" }] }) } }, request),
