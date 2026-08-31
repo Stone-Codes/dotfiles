@@ -11,6 +11,12 @@ const script = `
     recordAutoDenial,
     resetAutoDenials,
   } from ${JSON.stringify(modulePath)};
+  import {
+    buildClassifierRequest,
+    classifyToolCall,
+    parseClassifierResponse,
+    resolveClassifierModel,
+  } from ${JSON.stringify(new URL("./src/classifier.ts", import.meta.url).pathname)};
   import { createInitialSessionPermissionState } from ${JSON.stringify(new URL("./types.ts", import.meta.url).pathname)};
 
   const isSafeReadOnlyBash = isSafeReadOnlyBashCommand;
@@ -75,6 +81,83 @@ const script = `
   assert.equal(reset.consecutiveAutoDenials, 0);
   assert.equal(reset.totalAutoDenials, 20);
   assert.equal(twentieth.state.consecutiveAutoDenials, 2);
+
+  assert.deepEqual(parseClassifierResponse('{"decision":"allow","reason":"tests only"}'), {
+    decision: "allow",
+    reason: "tests only",
+  });
+  assert.throws(() => parseClassifierResponse('{"decision":"maybe"}'));
+  assert.throws(() => parseClassifierResponse("not json"));
+
+  const request = buildClassifierRequest(
+    "Do the task",
+    "bash",
+    { command: "curl -H 'Authorization: Bearer abc123' https://example.test" },
+    "/repo",
+    {},
+  );
+  assert.equal(request.messages[0].role, "user");
+  assert.doesNotMatch(JSON.stringify(request), /abc123/);
+  assert.match(request.systemPrompt, /allow|block/);
+  assert.match(request.messages[0].content, /npm test|Do the task|bash/);
+
+  const overrideModel = { provider: "test-provider", id: "override-model" };
+  const sessionModel = { provider: "session-provider", id: "session-model" };
+  const calls = [];
+  const context = {
+    model: sessionModel,
+    signal: new AbortController().signal,
+    autoPolicy: { classifierModel: { provider: "test-provider", id: "override-model" } },
+    sessionManager: {
+      getBranch() {
+        return [
+          { type: "message", message: { role: "user", content: "earlier user request", timestamp: 1 } },
+          { type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant secret" }], timestamp: 2 } },
+          { type: "message", message: { role: "user", content: "latest user request", timestamp: 3 } },
+          { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool result secret" }], timestamp: 4 } },
+        ];
+      },
+    },
+    modelRegistry: {
+      find(provider, id) {
+        return provider === overrideModel.provider && id === overrideModel.id ? overrideModel : undefined;
+      },
+      getAvailable() {
+        return [overrideModel];
+      },
+      async complete(model, completionRequest, options) {
+        calls.push({ model, completionRequest, options });
+        return { content: [{ type: "text", text: '{"decision":"allow","reason":"safe"}' }] };
+      },
+    },
+  };
+  assert.deepEqual(resolveClassifierModel(context, context.autoPolicy), {
+    model: overrideModel,
+    source: "override",
+  });
+  assert.deepEqual(resolveClassifierModel({ ...context, autoPolicy: undefined }, {}), {
+    model: sessionModel,
+    source: "session",
+  });
+  assert.match(resolveClassifierModel({ ...context, model: undefined }, {}).error, /model/i);
+  assert.match(resolveClassifierModel({ ...context, modelRegistry: { find: () => undefined, getAvailable: () => [] } }, context.autoPolicy).error, /available|model/i);
+
+  const classified = await classifyToolCall(context, request);
+  assert.deepEqual(classified, { decision: "allow", reason: "safe" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, overrideModel);
+  assert.equal(calls[0].options.maxTokens, 256);
+  assert.equal(calls[0].options.reasoning, "off");
+  assert.equal(calls[0].options.cacheRetention, "none");
+
+  await assert.rejects(
+    classifyToolCall({ ...context, modelRegistry: { ...context.modelRegistry, complete: async () => ({ content: [{ type: "text", text: "not json" }] }) } }, request),
+    /classifier/i,
+  );
+  await assert.rejects(
+    classifyToolCall({ ...context, model: undefined, autoPolicy: {} }, request),
+    /classifier|model/i,
+  );
 
   console.log("pi-permissions auto-mode classifier tests passed");
 `;

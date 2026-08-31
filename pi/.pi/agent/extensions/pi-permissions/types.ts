@@ -1,3 +1,32 @@
+import type { Message as PiMessage, Model as PiModel } from "@earendil-works/pi-ai";
+
+export type Message = PiMessage;
+export type Model = PiModel<any>;
+
+export interface ClassifierRequest {
+  systemPrompt: string;
+  messages: [Message];
+}
+
+export interface ClassifierContext {
+  model?: Model;
+  modelRegistry: {
+    find(provider: string, id: string): Model | undefined;
+    getAvailable(): Model[];
+    complete(model: Model, request: ClassifierRequest, options: {
+      signal?: AbortSignal;
+      maxTokens: number;
+      reasoning: "off";
+      cacheRetention: "none";
+    }): Promise<{ content?: unknown }>;
+  };
+  signal?: AbortSignal;
+  autoPolicy?: AutoPolicy;
+  sessionManager?: {
+    getBranch(): unknown[];
+  };
+}
+
 export type PermissionState = "allow" | "deny" | "ask";
 
 export type PermissionMode = "manual" | "auto" | "allow-all";
