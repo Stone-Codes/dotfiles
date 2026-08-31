@@ -257,6 +257,32 @@ export function isSafeReadOnlyBashCommand(command: string): boolean {
   return true;
 }
 
+function hasDestructiveGitClean(command: string): boolean {
+  const stages = splitShell(command, [";", "\\n", "&&", "||", "&", "|"]);
+  return stages.some((stage) => {
+    const words = shellWords(stage);
+    if (words.length < 2 || words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "clean") {
+      return false;
+    }
+
+    let force = false;
+    let directories = false;
+    let ignored = false;
+    for (const word of words.slice(2)) {
+      if (word === "--") break;
+      if (word === "--force") force = true;
+      else if (word === "--directories") directories = true;
+      else if (word === "--ignored") ignored = true;
+      else if (/^-[^-]/.test(word)) {
+        force ||= word.includes("f");
+        directories ||= word.includes("d");
+        ignored ||= word.includes("x");
+      }
+    }
+    return force && (directories || ignored);
+  });
+}
+
 function hardBlockedBashReason(command: string): string | undefined {
   const lower = command.toLowerCase();
   if (/\brm\s+-[^\s]*[rf][^\s]*\s/.test(lower) || /\brm\s+-[^\s]*r[^\s]*f/.test(lower)) {
@@ -265,7 +291,7 @@ function hardBlockedBashReason(command: string): string | undefined {
   if (/\bgit\s+reset\b[\s\S]*\s--hard(?:\s|$)/.test(lower)) {
     return "hard git reset is blocked";
   }
-  if (/\bgit\s+clean\b/.test(lower) && /-(?=[^\s]*f)(?=[^\s]*d)(?=[^\s]*x)[^\s]*/.test(lower)) {
+  if (hasDestructiveGitClean(command)) {
     return "destructive git clean is blocked";
   }
   if (/\bgit\s+push\b[\s\S]*(?:--force(?:-with-lease)?(?:\s|$)|(?:^|\s)-[^\s]*f(?:\s|$))/.test(lower)) {
@@ -381,17 +407,17 @@ function isSensitiveObjectKey(key: string): boolean {
   return /(?:password|passwd|passphrase|apikey|accesskey|secret|token|clientsecret|privatekey|authorization|credential|auth)/.test(normalizedKey);
 }
 
-function redactSensitiveJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactSensitiveJsonValue);
+function redactSensitiveJsonValue(value: unknown, cwd: string): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redactSensitiveJsonValue(entry, cwd));
   if (isRecord(value)) {
     return Object.fromEntries(
       Object.entries(value).map(([key, nestedValue]) => [
         key,
-        isSensitiveObjectKey(key) ? "[REDACTED]" : redactSensitiveJsonValue(nestedValue),
+        isSensitiveObjectKey(key) ? "[REDACTED]" : redactSensitiveJsonValue(nestedValue, cwd),
       ]),
     );
   }
-  if (typeof value === "string") return redactSensitiveText(value);
+  if (typeof value === "string") return redactSensitiveText(value, cwd);
   return value;
 }
 
@@ -403,23 +429,23 @@ function redactedSecretAssignments(value: string): string {
   );
 }
 
-function redactedSensitivePaths(value: string): string {
+function redactedSensitivePaths(value: string, cwd: string): string {
   return value.replace(
     /(^|[\s"'=:([,{])([^\s"'`;&|,)}\]]+)/g,
     (match, prefix: string, token: string) => (
-      isSensitivePath(token, process.cwd()) ? `${prefix}[REDACTED_PATH]` : match
+      isSensitivePath(token, cwd) ? `${prefix}[REDACTED_PATH]` : match
     ),
   );
 }
 
 /** Remove credentials while retaining safe labels and command structure. */
-export function redactSensitiveText(value: string): string {
+export function redactSensitiveText(value: string, cwd = process.cwd()): string {
   if (typeof value !== "string") return String(value);
 
   try {
     const parsed: unknown = JSON.parse(value);
     if (isRecord(parsed) || Array.isArray(parsed)) {
-      return JSON.stringify(redactSensitiveJsonValue(parsed));
+      return JSON.stringify(redactSensitiveJsonValue(parsed, cwd));
     }
   } catch {
     // Treat non-JSON input as text below.
@@ -431,7 +457,7 @@ export function redactSensitiveText(value: string): string {
   );
   redacted = redacted.replace(API_KEY_VALUE, "[REDACTED]");
   redacted = redactedSecretAssignments(redacted);
-  return redactedSensitivePaths(redacted);
+  return redactedSensitivePaths(redacted, cwd);
 }
 
 /** Increment Auto denials without mutating the caller's session state. */

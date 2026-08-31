@@ -25,6 +25,7 @@ const script = `
   import {
     buildClassifierRequest,
     classifyToolCall,
+    MAX_CLASSIFIER_REQUEST_SIZE,
     parseClassifierResponse,
     resolveClassifierModel,
   } from ${JSON.stringify(new URL("./src/classifier.ts", import.meta.url).pathname)};
@@ -68,6 +69,16 @@ const script = `
 
   assert.equal(evaluateAutoGate("ls", { path: ".pi/agent/auth.json" }, "/repo", {}).kind, "block");
   assert.equal(evaluateAutoGate("bash", { command: "git clean -fdx" }, "/repo", {}).kind, "block");
+  for (const command of [
+    "git clean -d -f -x",
+    "git clean -f -d",
+    "git clean -x -f",
+    "git clean -fd -x",
+    "git clean -d -fx",
+  ]) {
+    assert.equal(evaluateAutoGate("bash", { command }, "/repo", {}).kind, "block", command);
+  }
+  assert.equal(evaluateAutoGate("bash", { command: "git clean -d -x" }, "/repo", {}).kind, "classify");
   assert.equal(evaluateAutoGate("write", { path: "src/file.ts", content: "x" }, "/repo", {}).kind, "classify");
   assert.equal(evaluateAutoGate("mcp", { server: "docs", tool: "search" }, "/repo", {}).kind, "classify");
   assert.equal(evaluateAutoGate("bash", { command: "git push --force" }, "/repo", {}).kind, "block");
@@ -128,6 +139,29 @@ const script = `
   assert.doesNotMatch(serializedRequest, /tool-result-secret/);
   assert.match(request.systemPrompt, /allow|block/);
   assert.match(request.messages[0].content, /bash/);
+
+  const configuredSecret = "configured-secret-value-that-must-not-leak";
+  const boundedRequest = buildClassifierRequest(
+    [
+      { type: "message", message: { role: "user", content: "user-secret-token=" + configuredSecret.repeat(100) } },
+    ],
+    "tool-" + "name-".repeat(1000),
+    { command: "npm test", token: configuredSecret, content: "x".repeat(100_000) },
+    "/repo/.ssh/" + "cwd-".repeat(1000),
+    {
+      hardDeny: [configuredSecret.repeat(1000)],
+      softDeny: ["safe rule"],
+      allow: ["safe allow"],
+      environment: ["API_TOKEN=" + configuredSecret, "safe environment"],
+    },
+  );
+  const serializedBoundedRequest = JSON.stringify(boundedRequest);
+  assert.equal(serializedBoundedRequest.length <= MAX_CLASSIFIER_REQUEST_SIZE, true);
+  assert.doesNotMatch(serializedBoundedRequest, /configured-secret-value-that-must-not-leak/);
+  assert.doesNotMatch(serializedBoundedRequest, /cwd-cwd-cwd/);
+  assert.match(boundedRequest.systemPrompt, /Effective Auto rules/);
+  assert.match(boundedRequest.systemPrompt, /environment/);
+  assert.match(boundedRequest.messages[0].content, /Arguments:/);
 
   const overrideModel = { provider: "test-provider", id: "override-model" };
   const sessionModel = { provider: "session-provider", id: "session-model" };

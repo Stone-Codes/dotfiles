@@ -137,6 +137,58 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function showPolicyStatus(ctx: { ui: { notify(message: string, level: "info" | "warning" | "error"): void } }): void {
+    const lines = [
+      `Mode: ${sessionState.mode.toUpperCase()}`,
+      `Policy file: ${POLICY_FILE}`,
+      ` exists: ${fs.existsSync(POLICY_FILE)}`,
+      "",
+      "Log file: " + getLogPath(),
+      " exists: " + fs.existsSync(getLogPath()),
+      "",
+      "Default policies:",
+      "",
+      "  tools:  " + policy.defaultPolicy.tools,
+      "  bash:   " + policy.defaultPolicy.bash,
+      "  mcp:    " + policy.defaultPolicy.mcp,
+      "  skills: " + policy.defaultPolicy.skills,
+      "",
+    ];
+
+    if (policy.tools && Object.keys(policy.tools).length > 0) {
+      lines.push("Tool permissions:");
+      for (const [name, state] of Object.entries(policy.tools)) {
+        lines.push("  " + name + ": " + state);
+      }
+      lines.push("");
+    }
+
+    if (policy.bash && Object.keys(policy.bash).length > 0) {
+      lines.push("Bash permissions:");
+      for (const [pattern, state] of Object.entries(policy.bash)) {
+        lines.push('  "' + pattern + '": ' + state);
+      }
+      lines.push("");
+    }
+
+    if (policy.mcp && Object.keys(policy.mcp).length > 0) {
+      lines.push("MCP permissions:");
+      for (const [pattern, state] of Object.entries(policy.mcp)) {
+        lines.push('  "' + pattern + '": ' + state);
+      }
+      lines.push("");
+    }
+
+    if (policy.skills && Object.keys(policy.skills).length > 0) {
+      lines.push("Skill permissions:");
+      for (const [pattern, state] of Object.entries(policy.skills)) {
+        lines.push('  "' + pattern + '": ' + state);
+      }
+    }
+
+    ctx.ui.notify(lines.join("\n"), "info");
+  }
+
   // Reload policy on session start (catches external changes) and reset the
   // session-only mode to Manual rather than persisting a selected mode.
   pi.on("session_start", async (_event, ctx) => {
@@ -494,8 +546,9 @@ export default function (pi: ExtensionAPI) {
     description: "Show or change the current permission mode and policy",
     handler: async (args, ctx) => {
       const command = args?.trim() ?? "";
+      const normalizedCommand = command.toLowerCase();
       const parsedMode = parsePermissionModeCommand(command);
-      if (command.startsWith("mode")) {
+      if (normalizedCommand.startsWith("mode")) {
         if (!parsedMode) {
           ctx.ui.notify("Usage: /perms mode <manual|auto|allow-all>", "error");
           return;
@@ -503,60 +556,15 @@ export default function (pi: ExtensionAPI) {
         setMode(parsedMode, ctx);
         return;
       }
-      if (command && command.toLowerCase() !== "status") {
+      if (command && normalizedCommand !== "status") {
         ctx.ui.notify("Usage: /perms [status|mode <manual|auto|allow-all>]", "error");
         return;
       }
 
-      const lines = [
-        `Mode: ${sessionState.mode.toUpperCase()}`,
-        `Policy file: ${POLICY_FILE}`,
-        ` exists: ${fs.existsSync(POLICY_FILE)}`,
-        "",
-        "Log file: " + getLogPath(),
-        " exists: " + fs.existsSync(getLogPath()),
-        "",
-        "Default policies:",
-        "",
-        "  tools:  " + policy.defaultPolicy.tools,
-        "  bash:   " + policy.defaultPolicy.bash,
-        "  mcp:    " + policy.defaultPolicy.mcp,
-        "  skills: " + policy.defaultPolicy.skills,
-        "",
-      ];
+      showPolicyStatus(ctx);
+      return;
 
-      if (policy.tools && Object.keys(policy.tools).length > 0) {
-        lines.push("Tool permissions:");
-        for (const [name, state] of Object.entries(policy.tools)) {
-          lines.push("  " + name + ": " + state);
-        }
-        lines.push("");
-      }
 
-      if (policy.bash && Object.keys(policy.bash).length > 0) {
-        lines.push("Bash permissions:");
-        for (const [pattern, state] of Object.entries(policy.bash)) {
-          lines.push('  "' + pattern + '": ' + state);
-        }
-        lines.push("");
-      }
-
-      if (policy.mcp && Object.keys(policy.mcp).length > 0) {
-        lines.push("MCP permissions:");
-        for (const [pattern, state] of Object.entries(policy.mcp)) {
-          lines.push('  "' + pattern + '": ' + state);
-        }
-        lines.push("");
-      }
-
-      if (policy.skills && Object.keys(policy.skills).length > 0) {
-        lines.push("Skill permissions:");
-        for (const [pattern, state] of Object.entries(policy.skills)) {
-          lines.push('  "' + pattern + '": ' + state);
-        }
-      }
-
-      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
@@ -578,7 +586,11 @@ export default function (pi: ExtensionAPI) {
         setMode("manual", ctx);
         return;
       }
-      ctx.ui.notify("Usage: /auto [on|off]", "error");
+      if (command === "status") {
+        showPolicyStatus(ctx);
+        return;
+      }
+      ctx.ui.notify("Usage: /auto [on|off|status]", "error");
     },
   });
 

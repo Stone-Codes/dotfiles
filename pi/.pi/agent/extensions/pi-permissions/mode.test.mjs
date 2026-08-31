@@ -270,6 +270,16 @@ const permsStatus = runExtensionScenario(
     assert.equal(notifications.at(-1), bareStatus);
     assert.match(notifications.at(-1), /^Mode: MANUAL/);
     notifications.length = 0;
+
+    await commands.get("perms").handler("Mode auto", ctx);
+    assert.match(statuses.at(-1), /^AUTO/);
+    notifications.length = 0;
+    await commands.get("auto").handler("status", ctx);
+    const autoStatus = notifications.at(-1);
+    assert.match(autoStatus, /^Mode: AUTO/);
+    notifications.length = 0;
+    await commands.get("perms").handler("status", ctx);
+    assert.equal(notifications.at(-1), autoStatus);
   `,
 );
 assert.equal(permsStatus.notifications.length, 0);
