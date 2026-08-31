@@ -14,9 +14,23 @@ import { spawn, spawnSync } from "node:child_process";
 
 const extensionDir = new URL(".", import.meta.url);
 const source = readFileSync(new URL("./types.ts", extensionDir), "utf8");
+const indexSource = readFileSync(new URL("./index.ts", extensionDir), "utf8");
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", extensionDir), "utf8"));
 
 assert.equal(packageJson.dependencies["proper-lockfile"], "^4.1.2");
+assert.match(indexSource, /mode === "allow-all"/);
+assert.match(indexSource, /mode === "manual"/);
+assert.match(indexSource, /mode === "auto"/);
+assert.match(indexSource, /registerCommand\("auto-model"/);
+assert.match(indexSource, /registerCommand\("auto"/);
+assert.match(indexSource, /registerCommand\("perms"/);
+assert.match(indexSource, /consecutiveAutoDenials/);
+assert.match(indexSource, /ctx\.modelRegistry\.complete/);
+assert.match(indexSource, /allowedPatterns = \[\]/);
+assert.match(indexSource, /resetAutoDenials/);
+assert.match(indexSource, /Classifier unavailable; Auto mode did not approve this action\./);
+assert.match(indexSource, /function setMode[\s\S]*?sessionState\.allowedPatterns = \[\][\s\S]*?resetAutoDenials/);
+assert.doesNotMatch(indexSource, /setMode[\s\S]{0,200}updatePolicyFile/);
 assert.equal(source.includes('type PermissionMode = "manual" | "auto" | "allow-all"'), true);
 assert.equal(source.includes('mode: "manual"'), true);
 assert.equal(source.includes("consecutiveAutoDenials"), true);

@@ -1,7 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadPolicy, checkToolPermission, checkBashPermission, checkSkillPermission, checkMcpPermission, deriveMcpTarget } from "./src/permission-manager";
-import { getLogPath } from "./src/logging";
-import type { SessionPermissionState } from "./types";
+import { updatePolicyFile } from "./src/config";
+import { evaluateAutoGate, recordAutoDenial, resetAutoDenials } from "./src/auto-mode";
+import { buildClassifierRequest, classifyToolCall } from "./src/classifier";
+import { getLogPath, logAutoDenial } from "./src/logging";
+import { createInitialSessionPermissionState, type PermissionMode, type SessionPermissionState, type ClassifierContext } from "./types";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -72,15 +75,45 @@ function isReadOnlyBashCommand(command: string, cwd: string): boolean {
 export default function (pi: ExtensionAPI) {
   let policy = loadPolicy(POLICY_FILE);
   
-  // Session state for temporary permission overrides
-  const sessionState: SessionPermissionState = {
-    allowAll: false,
-    allowedPatterns: [],
-  };
+  // Session state for temporary permission overrides. The selected mode is
+  // intentionally session-only; only the classifier model is persisted.
+  const sessionState: SessionPermissionState = createInitialSessionPermissionState();
 
-  // Reload policy on session start (catches external changes)
-  pi.on("session_start", async (_event, _ctx) => {
+  function classifierLabel(ctx?: { model?: { provider: string; id: string } }): string {
+    const configured = policy.auto?.classifierModel;
+    if (configured) return `${configured.provider}/${configured.id}`;
+    if (ctx?.model) return `${ctx.model.provider}/${ctx.model.id}`;
+    return "default";
+  }
+
+  function updateStatus(ctx: { ui: { setStatus(id: string, text: string | undefined): void }; model?: { provider: string; id: string } }): void {
+    const label = sessionState.mode === "auto" ? `AUTO (${classifierLabel(ctx)})` : sessionState.mode === "manual" ? "MANUAL" : "ALLOW-ALL";
+    ctx.ui.setStatus("pi-permissions", label);
+  }
+
+  function setMode(mode: PermissionMode, ctx: { ui: { setStatus(id: string, text: string | undefined): void; notify(message: string, level: "info" | "warning" | "error"): void }; model?: { provider: string; id: string } }): void {
+    sessionState.mode = mode;
+    sessionState.allowedPatterns = [];
+    Object.assign(sessionState, resetAutoDenials(sessionState));
+    updateStatus(ctx);
+
+    if (mode === "auto") {
+      ctx.ui.notify(`Auto mode enabled. Classifier: ${classifierLabel(ctx)}`, "info");
+    } else if (mode === "allow-all") {
+      ctx.ui.notify("WARNING: Allow-all mode bypasses all permission checks for this session", "warning");
+    } else {
+      ctx.ui.notify("Manual permission mode enabled", "info");
+    }
+  }
+
+  // Reload policy on session start (catches external changes) and reset the
+  // session-only mode to Manual rather than persisting a selected mode.
+  pi.on("session_start", async (_event, ctx) => {
     policy = loadPolicy(POLICY_FILE);
+    sessionState.mode = "manual";
+    sessionState.allowedPatterns = [];
+    Object.assign(sessionState, resetAutoDenials(sessionState));
+    updateStatus(ctx);
   });
 
   // Filter tools and sanitize system prompt before agent starts
@@ -95,6 +128,12 @@ export default function (pi: ExtensionAPI) {
     const toolsToKeep: string[] = [];
     
     for (const tool of allTools) {
+      // Auto must be able to classify tools that Manual policy would deny;
+      // Allow-all likewise keeps the complete tool set available.
+      if (sessionState.mode === "auto" || sessionState.mode === "allow-all") {
+        toolsToKeep.push(tool.name);
+        continue;
+      }
       const check = checkToolPermission(policy, tool.name);
       if (check.state !== "deny") {
         toolsToKeep.push(tool.name);
@@ -111,14 +150,111 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // Enforce permissions on tool calls
-  pi.on("tool_call", async (event, ctx) => {
-    // Check session-wide allow-all mode
-    if (sessionState.allowAll) {
-      return; // Allow silently
+  function autoBlock(
+    event: { toolName: string; input?: unknown },
+    reason: string,
+    details: Partial<{ command: string; mcpTarget: string }> = {},
+    prefixReason = true,
+  ): { block: true; reason: string } {
+    logAutoDenial(event.toolName, event.input, reason, details);
+    return { block: true, reason: prefixReason ? `Blocked by Auto mode: ${reason}` : reason };
+  }
+
+  async function handleAutoToolCall(event: { toolName: string; input?: any }, ctx: any): Promise<{ block: true; reason: string } | undefined> {
+    const toolName = event.toolName;
+    const input = event.input;
+    const command = toolName === "bash" && typeof input?.command === "string" ? input.command : undefined;
+    const mcpTarget = toolName === "mcp" && input ? deriveMcpTarget(input) : undefined;
+
+    // Explicit policy denies remain authoritative in Auto mode, while asks
+    // are delegated to the deterministic gate and classifier below.
+    const explicitDeny = toolName === "mcp" && mcpTarget
+      ? checkMcpPermission(policy, mcpTarget)
+      : toolName === "bash" && command !== undefined
+        ? checkBashPermission(policy, command)
+        : toolName !== "mcp"
+          ? checkToolPermission(policy, toolName)
+          : undefined;
+    if (explicitDeny?.state === "deny") {
+      const reason = toolName === "mcp"
+        ? `MCP target '${mcpTarget}' is denied by permission policy${explicitDeny.matchedPattern ? ` (matched: ${explicitDeny.matchedPattern})` : ""}`
+        : toolName === "bash"
+          ? `Bash command blocked by permission policy${explicitDeny.matchedPattern ? ` (matched: ${explicitDeny.matchedPattern})` : ""}`
+          : `Tool '${toolName}' is denied by permission policy${explicitDeny.matchedPattern ? ` (matched: ${explicitDeny.matchedPattern})` : ""}`;
+      return autoBlock(event, reason, { command, mcpTarget });
     }
 
-    const toolName = event.toolName;
+    const gate = evaluateAutoGate(toolName, input, ctx.cwd, policy.auto ?? {});
+    if (gate.kind === "allow") {
+      Object.assign(sessionState, resetAutoDenials(sessionState));
+      return;
+    }
+    if (gate.kind === "block") {
+      return autoBlock(event, gate.reason ?? "deterministic Auto policy blocked this action", { command, mcpTarget });
+    }
+
+    const autoPolicy = policy.auto ?? {};
+    // classifyToolCall invokes ctx.modelRegistry.complete with the bounded request.
+    const classifierContext = { ...ctx, autoPolicy } as ClassifierContext;
+    const request = buildClassifierRequest(
+      ctx.sessionManager?.getBranch?.() ?? [],
+      toolName,
+      input,
+      ctx.cwd,
+      autoPolicy,
+    );
+
+    try {
+      const result = await classifyToolCall(classifierContext, request);
+      if (result.decision === "allow") {
+        Object.assign(sessionState, resetAutoDenials(sessionState));
+        return;
+      }
+
+      const reason = result.reason || "classifier blocked this action";
+      const denial = recordAutoDenial(sessionState);
+      Object.assign(sessionState, denial.state);
+      const blocked = autoBlock(event, reason, { command, mcpTarget });
+      if (denial.disable) {
+        sessionState.mode = "manual";
+        updateStatus(ctx);
+        ctx.ui.notify(`Auto mode disabled after ${sessionState.consecutiveAutoDenials} consecutive denials; switched to Manual`, "warning");
+      }
+      return blocked;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx.hasUI) {
+        const ok = await ctx.ui.confirm(
+          "Classifier unavailable",
+          `Auto mode could not classify this action (${message}). Allow this action once?`,
+        );
+        if (ok) {
+          Object.assign(sessionState, resetAutoDenials(sessionState));
+          return;
+        }
+      }
+
+      const reason = ctx.hasUI
+        ? "User denied action after classifier failure"
+        : "Classifier unavailable; Auto mode did not approve this action.";
+      return autoBlock(event, reason, { command, mcpTarget }, ctx.hasUI);
+    }
+  }
+
+  // Enforce permissions on tool calls
+  pi.on("tool_call", async (event, ctx) => {
+    // Allow-all is deliberately the first check and bypasses every permission
+    // check, preserving the existing session-wide full bypass semantics.
+    if (sessionState.mode === "allow-all") {
+      return;
+    }
+
+    if (sessionState.mode === "auto") {
+      return handleAutoToolCall(event, ctx);
+    }
+
+    if (sessionState.mode === "manual") {
+      const toolName = event.toolName;
 
     // Check if it's an MCP tool call
     if (toolName === "mcp" && event.input) {
@@ -286,8 +422,9 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Allow the tool call to proceed
-    return;
+      // Allow the tool call to proceed
+      return;
+    }
   });
 
   // Handle skill loading via input interception
@@ -323,9 +460,25 @@ export default function (pi: ExtensionAPI) {
 
   // Register a command to show current policy
   pi.registerCommand("perms", {
-    description: "Show current permission policy",
-    handler: async (_args, ctx) => {
+    description: "Show or change the current permission mode and policy",
+    handler: async (args, ctx) => {
+      const command = args?.trim() ?? "";
+      const modeMatch = command.match(/^mode(?:\\s+(manual|auto|allow-all))?$/i);
+      if (command.startsWith("mode")) {
+        if (!modeMatch?.[1]) {
+          ctx.ui.notify("Usage: /perms mode <manual|auto|allow-all>", "error");
+          return;
+        }
+        setMode(modeMatch[1].toLowerCase() as PermissionMode, ctx);
+        return;
+      }
+      if (command) {
+        ctx.ui.notify("Usage: /perms [mode <manual|auto|allow-all>]", "error");
+        return;
+      }
+
       const lines = [
+        `Mode: ${sessionState.mode.toUpperCase()}`,
         `Policy file: ${POLICY_FILE}`,
         ` exists: ${fs.existsSync(POLICY_FILE)}`,
         "",
@@ -376,16 +529,101 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Register command to toggle session-wide allow-all mode
+  // Register the Auto aliases.
+  pi.registerCommand("auto", {
+    description: "Show or change Auto permission mode",
+    handler: async (args, ctx) => {
+      const command = args?.trim().toLowerCase() ?? "";
+      if (!command) {
+        ctx.ui.notify(`Auto mode is ${sessionState.mode === "auto" ? "on" : "off"}`, "info");
+        updateStatus(ctx);
+        return;
+      }
+      if (command === "on") {
+        setMode("auto", ctx);
+        return;
+      }
+      if (command === "off") {
+        setMode("manual", ctx);
+        return;
+      }
+      ctx.ui.notify("Usage: /auto [on|off]", "error");
+    },
+  });
+
+  async function setClassifierModel(args: string | undefined, ctx: any): Promise<void> {
+    const available = await Promise.resolve(ctx.modelRegistry.getAvailable());
+    const requested = args?.trim();
+    const defaultLabel = "default (active session model)";
+    let selection = requested;
+    if (!selection) {
+      if (!ctx.hasUI) {
+        ctx.ui.notify("Cannot select an Auto classifier model in non-interactive mode", "error");
+        return;
+      }
+      selection = await ctx.ui.select(
+        "Select Auto classifier model",
+        [defaultLabel, ...available.map((model: { provider: string; id: string }) => `${model.provider}/${model.id}`)],
+      );
+      if (!selection) return;
+    }
+
+    const reference = selection === "default" || selection === defaultLabel
+      ? undefined
+      : (() => {
+          const separator = selection.indexOf("/");
+          if (separator <= 0 || separator === selection.length - 1) return null;
+          return { provider: selection.slice(0, separator), id: selection.slice(separator + 1) };
+        })();
+
+    if (reference === null) {
+      ctx.ui.notify("Usage: /auto-model [default|provider/model]", "error");
+      return;
+    }
+
+    if (reference) {
+      const model = ctx.modelRegistry.find(reference.provider, reference.id);
+      const authenticated = model && available.some((candidate: { provider: string; id: string }) => (
+        candidate === model || (candidate.provider === reference.provider && candidate.id === reference.id)
+      ));
+      if (!model || !authenticated) {
+        ctx.ui.notify(`Auto classifier model ${selection} is missing or unauthenticated`, "error");
+        return;
+      }
+    }
+
+    try {
+      await updatePolicyFile(POLICY_FILE, (document) => {
+        document.auto ??= {};
+        if (reference) document.auto.classifierModel = reference;
+        else delete document.auto.classifierModel;
+      });
+      policy = loadPolicy(POLICY_FILE);
+      updateStatus(ctx);
+      ctx.ui.notify(reference ? `Auto classifier model set to ${selection}` : "Auto classifier model reset to the active session model", "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Could not persist Auto classifier model: ${message}`, "error");
+    }
+  }
+
+  pi.registerCommand("auto-model", {
+    description: "Select or show the Auto classifier model",
+    handler: async (args, ctx) => {
+      try {
+        await setClassifierModel(args, ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Could not list Auto classifier models: ${message}`, "error");
+      }
+    },
+  });
+
+  // Register command to toggle session-wide allow-all mode.
   pi.registerCommand("perms-allow-all", {
     description: "Toggle session-wide allow all permissions",
     handler: async (_args, ctx) => {
-      sessionState.allowAll = !sessionState.allowAll;
-      const status = sessionState.allowAll ? "ENABLED" : "DISABLED";
-      ctx.ui.notify(`Session allow-all mode: ${status}`, sessionState.allowAll ? "info" : "warning");
-      if (sessionState.allowAll) {
-        ctx.ui.notify("All permission checks will be bypassed for this session", "warning");
-      }
+      setMode(sessionState.mode === "allow-all" ? "manual" : "allow-all", ctx);
     },
   });
 
@@ -406,8 +644,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("perms-clear", {
     description: "Clear session allowances and allowed patterns",
     handler: async (_args, ctx) => {
-      sessionState.allowAll = false;
-      sessionState.allowedPatterns = [];
+      setMode("manual", ctx);
       ctx.ui.notify("Session allowances cleared", "info");
     },
   });

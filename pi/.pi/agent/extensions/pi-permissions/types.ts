@@ -83,7 +83,6 @@ export interface PermissionLogEntry {
  * Session state for temporary permission overrides
  */
 export interface SessionPermissionState {
-  allowAll: boolean;
   mode: PermissionMode;
   consecutiveAutoDenials: number;
   totalAutoDenials: number;
@@ -92,7 +91,6 @@ export interface SessionPermissionState {
 
 export function createInitialSessionPermissionState(): SessionPermissionState {
   return {
-    allowAll: false,
     mode: "manual",
     consecutiveAutoDenials: 0,
     totalAutoDenials: 0,
