@@ -173,7 +173,7 @@ function runExtensionScenario(policy, scenario) {
   );
   rmSync(scenarioDir, { recursive: true, force: true });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  return JSON.parse(result.stdout.trim().split("\\n").at(-1));
+  return JSON.parse(result.stdout.trim().split("\n").at(-1));
 }
 
 const dispatch = runExtensionScenario(

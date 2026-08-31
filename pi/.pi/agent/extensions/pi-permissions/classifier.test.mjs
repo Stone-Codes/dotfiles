@@ -119,7 +119,9 @@ const script = `
     { type: "message", message: { role: "user", content: recentUserContext, timestamp: 3 } },
     { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "Authorization: Bearer tool-result-secret" }], timestamp: 4 } },
   ];
-  const expectedBoundedUserContext = (oldUserContext + String.fromCharCode(10) + recentUserContext).slice(-12_000);
+  const rawUserContext = oldUserContext + String.fromCharCode(10) + recentUserContext;
+  const truncationMarker = "\\n[TRUNCATED]";
+  const expectedBoundedUserContext = `${truncationMarker}${rawUserContext.slice(-(12_000 - truncationMarker.length))}`;
   const request = buildClassifierRequest(
     requestBoundaryBranch,
     "bash",
