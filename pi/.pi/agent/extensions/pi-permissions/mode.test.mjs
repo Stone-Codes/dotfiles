@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const extensionDir = new URL(".", import.meta.url);
 const source = readFileSync(new URL("./types.ts", extensionDir), "utf8");
@@ -11,6 +11,21 @@ assert.equal(source.includes('type PermissionMode = "manual" | "auto" | "allow-a
 assert.equal(source.includes('mode: "manual"'), true);
 assert.equal(source.includes("consecutiveAutoDenials"), true);
 assert.equal(source.includes("classifierModel"), true);
+
+const stateScript = `
+    import { createInitialSessionPermissionState } from ${JSON.stringify(new URL("./types.ts", extensionDir).pathname)};
+    console.log(JSON.stringify(createInitialSessionPermissionState()));
+  `;
+const stateResult = spawnSync(
+  process.execPath,
+  ["--experimental-strip-types", "--input-type=module", "--eval", stateScript],
+  { encoding: "utf8" },
+);
+assert.equal(stateResult.status, 0, stateResult.stderr || stateResult.stdout);
+const initialState = JSON.parse(stateResult.stdout);
+assert.equal(initialState.mode, "manual");
+assert.equal(initialState.consecutiveAutoDenials, 0);
+assert.equal(initialState.totalAutoDenials, 0);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "pi-permissions-mode-"));
 const policyPath = join(fixtureDir, "pi-permissions.jsonc");
@@ -85,6 +100,65 @@ try {
   assert.deepEqual(persisted.unrelated, { keep: true });
 } finally {
   rmSync(fixtureDir, { recursive: true, force: true });
+}
+
+const concurrentDir = mkdtempSync(join(tmpdir(), "pi-permissions-lock-"));
+const concurrentPolicyPath = join(concurrentDir, "pi-permissions.jsonc");
+const markerA = join(concurrentDir, "entered-a");
+const markerB = join(concurrentDir, "entered-b");
+const concurrentScript = (marker, key) => `
+    import { writeFileSync } from "node:fs";
+    import { updatePolicyFile } from ${JSON.stringify(configPath)};
+    updatePolicyFile(${JSON.stringify(concurrentPolicyPath)}, (policy) => {
+      writeFileSync(${JSON.stringify(marker)}, "entered");
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      Atomics.wait(wait, 0, 0, 150);
+      policy.auto ??= {};
+      policy.auto[${JSON.stringify(key)}] = true;
+    });
+  `;
+const runConcurrentUpdate = (marker, key) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--input-type=module",
+        "--eval",
+        concurrentScript(marker, key),
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      if (status === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr || `concurrent update exited with ${status}`));
+      }
+    });
+  });
+
+try {
+  writeFileSync(concurrentPolicyPath, "{}\n");
+  const firstUpdate = runConcurrentUpdate(markerA, "first");
+  for (let attempt = 0; attempt < 200 && !existsSync(markerA); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(existsSync(markerA), true);
+  const secondUpdate = runConcurrentUpdate(markerB, "second");
+  await Promise.all([firstUpdate, secondUpdate]);
+
+  const persistedConcurrent = JSON.parse(readFileSync(concurrentPolicyPath, "utf8"));
+  assert.equal(persistedConcurrent.auto.first, true);
+  assert.equal(persistedConcurrent.auto.second, true);
+} finally {
+  rmSync(concurrentDir, { recursive: true, force: true });
 }
 
 console.log("pi-permissions mode/config tests passed");

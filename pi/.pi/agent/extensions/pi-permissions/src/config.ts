@@ -1,6 +1,8 @@
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -71,6 +73,37 @@ function stripJsoncComments(content: string): string {
   return result;
 }
 
+const LOCK_RETRY_ATTEMPTS = 50;
+const LOCK_INITIAL_BACKOFF_MS = 10;
+const LOCK_MAX_BACKOFF_MS = 100;
+
+function sleepSync(milliseconds: number): void {
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(waitArray, 0, 0, milliseconds);
+}
+
+function acquireLock(lockPath: string): number {
+  for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return openSync(lockPath, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (attempt === LOCK_RETRY_ATTEMPTS - 1) {
+        break;
+      }
+      const backoff = Math.min(
+        LOCK_INITIAL_BACKOFF_MS * 2 ** attempt,
+        LOCK_MAX_BACKOFF_MS,
+      );
+      sleepSync(backoff);
+    }
+  }
+
+  throw new Error(`Timed out acquiring policy lock ${lockPath}`);
+}
+
 function readPolicy(filePath: string): PolicyDocument {
   if (!existsSync(filePath)) {
     return {} as PolicyDocument;
@@ -84,23 +117,42 @@ function readPolicy(filePath: string): PolicyDocument {
 }
 
 export function updatePolicyFile(filePath: string, update: PolicyUpdater): void {
-  const policy = readPolicy(filePath);
-  update(policy);
-
-  const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
+  const lockPath = `${filePath}.lock`;
+  let lockFd: number | undefined;
+  let temporaryPath: string | undefined;
   mkdirSync(dirname(filePath), { recursive: true });
+
   try {
+    lockFd = acquireLock(lockPath);
+    const policy = readPolicy(filePath);
+    update(policy);
+
+    temporaryPath = `${filePath}.${randomUUID()}.tmp`;
     writeFileSync(temporaryPath, `${JSON.stringify(policy, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
     renameSync(temporaryPath, filePath);
-  } catch (error) {
-    try {
-      unlinkSync(temporaryPath);
-    } catch {
-      // Preserve the original error when cleanup cannot remove the temporary file.
+    temporaryPath = undefined;
+  } finally {
+    if (temporaryPath) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // Preserve the original error when cleanup cannot remove the temporary file.
+      }
     }
-    throw error;
+    if (lockFd !== undefined) {
+      try {
+        closeSync(lockFd);
+      } catch {
+        // The lock file is still removed below even if closing the descriptor fails.
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Preserve the original error when cleanup cannot remove the lock file.
+      }
+    }
   }
 }
