@@ -4,7 +4,9 @@
 // Auto classifier input excludes raw tool results. Interactive classifier failures
 // fall back to Manual confirmation; headless failures block the action.
 // Auto returns to Manual after three consecutive or twenty total denials.
-// Allow-all bypasses every permission check for the current session.
+// Allow-all bypasses all tool permission checks for the current session, matching
+// the existing tool full-bypass behavior. Skill-loading permission checks remain
+// separate and are not bypassed.
 {
   "defaultPolicy": {
     "tools": "ask",

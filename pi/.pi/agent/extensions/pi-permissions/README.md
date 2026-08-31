@@ -87,7 +87,7 @@ classifier model override under `auto.classifierModel`.
 |------|----------|
 | **Manual** | Uses the configured `allow`, `deny`, and `ask` policy states. This is the default mode for each session. |
 | **Auto** | Applies deterministic hard-deny and safe-allow rules, then sends remaining calls to the configured classifier. Read/search operations and safe read-only shell commands do not invoke the classifier. |
-| **Allow-all** | Bypasses all permission checks for the current session exactly as the existing full-bypass behavior does. Use it deliberately; the extension displays a warning when it is enabled. |
+| **Allow-all** | Bypasses all tool permission checks for the current session, matching the existing tool full-bypass behavior. Skill-loading permission checks remain separate and are not bypassed. Use it deliberately; the extension displays a warning when it is enabled. |
 
 Auto classifier input contains recent user context, the working directory, and the
 tool call, but excludes raw tool results. Sensitive values are redacted. Hard-denied
