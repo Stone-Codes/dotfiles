@@ -1,32 +1,146 @@
 import { readFileSync, existsSync } from "node:fs";
-import { PermissionPolicy, PermissionState, PermissionLogEntry } from "../types";
+import type { AutoPolicy, PermissionPolicy, PermissionState } from "../types";
 import { findMatchingPattern } from "./wildcard-matcher";
 import { logPermissionCheck } from "./logging";
 
-const DEFAULT_POLICY: PermissionPolicy = {
-  defaultPolicy: {
-    tools: "ask",
-    bash: "ask",
-    mcp: "ask",
-    skills: "ask",
-  },
+const DEFAULT_PERMISSION_POLICY = {
+  tools: "ask" as const,
+  bash: "ask" as const,
+  mcp: "ask" as const,
+  skills: "ask" as const,
 };
 
+function createDefaultPolicy(): PermissionPolicy {
+  return {
+    defaultPolicy: { ...DEFAULT_PERMISSION_POLICY },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stripJsoncComments(content: string): string {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    const next = content[index + 1];
+
+    if (lineComment) {
+      if (character === "\n" || character === "\r") {
+        lineComment = false;
+        result += character;
+      }
+      continue;
+    }
+
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      } else if (character === "\n" || character === "\r") {
+        result += character;
+      }
+      continue;
+    }
+
+    if (inString) {
+      result += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      result += character;
+    } else if (character === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+    } else {
+      result += character;
+    }
+  }
+
+  return result;
+}
+
+function validateAutoPolicy(value: unknown): AutoPolicy {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const auto: AutoPolicy = {};
+  const classifierModel = value.classifierModel;
+  if (
+    isRecord(classifierModel) &&
+    typeof classifierModel.provider === "string" &&
+    classifierModel.provider.length > 0 &&
+    typeof classifierModel.id === "string" &&
+    classifierModel.id.length > 0
+  ) {
+    auto.classifierModel = {
+      provider: classifierModel.provider,
+      id: classifierModel.id,
+    };
+  }
+
+  for (const key of ["hardDeny", "softDeny", "allow", "environment"] as const) {
+    const valueForKey = value[key];
+    if (Array.isArray(valueForKey)) {
+      auto[key] = valueForKey.filter((entry): entry is string => typeof entry === "string");
+    }
+  }
+
+  return auto;
+}
+
 export function loadPolicy(filePath: string): PermissionPolicy {
+  const defaultPolicy = createDefaultPolicy();
   if (!existsSync(filePath)) {
-    return DEFAULT_POLICY;
+    return defaultPolicy;
   }
 
   try {
     const content = readFileSync(filePath, "utf-8");
-    // Simple JSONC support - strip comments
-    const cleaned = content.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
-    const policy = JSON.parse(cleaned);
-    return { ...DEFAULT_POLICY, ...policy };
+    const parsed: unknown = JSON.parse(stripJsoncComments(content));
+    if (!isRecord(parsed)) {
+      throw new Error("permission policy must be a JSON object");
+    }
+
+    const policy: PermissionPolicy = {
+      ...defaultPolicy,
+      ...parsed,
+      defaultPolicy: {
+        ...defaultPolicy.defaultPolicy,
+        ...(isRecord(parsed.defaultPolicy) ? parsed.defaultPolicy : {}),
+      },
+    };
+    if (Object.prototype.hasOwnProperty.call(parsed, "auto")) {
+      policy.auto = validateAutoPolicy(parsed.auto);
+    }
+    return policy;
   } catch (e) {
     console.error(`Failed to load policy from ${filePath}:`, e);
-    return DEFAULT_POLICY;
+    return createDefaultPolicy();
   }
+}
+
+export function loadAutoPolicy(filePath: string): AutoPolicy {
+  return loadPolicy(filePath).auto ?? {};
 }
 
 export function checkToolPermission(
