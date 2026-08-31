@@ -161,8 +161,10 @@ const script = `
   assert.equal(serializedBoundedRequest.length <= MAX_CLASSIFIER_REQUEST_SIZE, true);
   assert.doesNotMatch(serializedBoundedRequest, /configured-secret-value-that-must-not-leak/);
   assert.doesNotMatch(serializedBoundedRequest, /cwd-cwd-cwd/);
-  assert.match(boundedRequest.systemPrompt, /Effective Auto rules/);
-  assert.match(boundedRequest.systemPrompt, /environment/);
+  const rulesMatch = boundedRequest.systemPrompt.match(/Effective Auto rules: (.+)$/);
+  assert.ok(rulesMatch);
+  const effectiveRules = JSON.parse(rulesMatch[1]);
+  assert.equal(Object.hasOwn(effectiveRules, "environment"), true);
   assert.match(boundedRequest.messages[0].content, /Arguments:/);
 
   const overrideModel = { provider: "test-provider", id: "override-model" };

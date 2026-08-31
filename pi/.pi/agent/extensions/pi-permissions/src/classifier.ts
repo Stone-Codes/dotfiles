@@ -65,6 +65,12 @@ function isSensitiveKey(key: string): boolean {
   );
 }
 
+function boundedLabel(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
+  return `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+}
+
 function boundedValue(value: unknown, cwd: string, depth = 0): unknown {
   if (typeof value === "string") return boundedText(value, MAX_NESTED_STRING_LENGTH, cwd);
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
@@ -75,7 +81,7 @@ function boundedValue(value: unknown, cwd: string, depth = 0): unknown {
   if (isRecord(value)) {
     return Object.fromEntries(
       Object.entries(value).slice(0, MAX_LIST_LENGTH).map(([key, nestedValue]) => [
-        boundedText(key, 256, cwd),
+        boundedLabel(key, 256),
         isSensitiveKey(key) ? "[REDACTED]" : boundedValue(nestedValue, cwd, depth + 1),
       ]),
     );
