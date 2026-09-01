@@ -47,7 +47,7 @@ const READ_ONLY_GIT_COMMANDS = new Set([
 const SENSITIVE_DIRECTORY_NAMES = new Set([".ssh", ".aws", ".gnupg", "gpg"]);
 const SENSITIVE_FILE_NAME = /^(?:credentials?|secrets?|secret|passwords?|passwd|shadow|known_hosts|id_(?:rsa|dsa|ecdsa|ed25519)|.*(?:credential|secret|password|passwd|private[_-]?key).*)$/i;
 const SENSITIVE_PATH_NAME = /(?:^|[\\/])\.env(?:\.[^\\/]*)?$/i;
-const SECRET_ASSIGNMENT = /(?:\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key)\b\s*[:=]\s*)/i;
+const SECRET_ASSIGNMENT = /(?:^|[^a-z0-9])(?:api[_-]?(?:key|token)|access[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key)(?:\s*[:=]\s*)/i;
 const AUTHORIZATION_HEADER = /\bauthorization\s*:\s*(?:bearer|basic)\s+/i;
 const API_KEY_VALUE = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{12,})\b/g;
 
@@ -423,9 +423,9 @@ function redactSensitiveJsonValue(value: unknown, cwd: string): unknown {
 
 function redactedSecretAssignments(value: string): string {
   return value.replace(
-    /(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key)\b["']?\s*[:=]\s*)(["']?)([^\s"'`,;}&]+)(["']?)/gi,
-    (_match, prefix: string, openingQuote: string, _secret: string, closingQuote: string) =>
-      `${prefix}${openingQuote}[REDACTED]${openingQuote ? (closingQuote || openingQuote) : closingQuote}`,
+    /(^|[^a-z0-9])((?:api[_-]?(?:key|token)|access[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key))(\s*[:=]\s*)(["']?)([^\s"'`,;}&]+)(["']?)/gi,
+    (_match, prefix: string, key: string, separator: string, openingQuote: string, _secret: string, closingQuote: string) =>
+      `${prefix}${key}${separator}${openingQuote}[REDACTED]${openingQuote ? (closingQuote || openingQuote) : closingQuote}`,
   );
 }
 

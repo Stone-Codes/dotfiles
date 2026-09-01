@@ -47,6 +47,7 @@ const script = `
   assert.equal(evaluateAutoGate("read", { path: ".env" }, "/repo", {}).kind, "block");
   assert.equal(evaluateAutoGate("grep", { pattern: "x", path: "src" }, "/repo", {}).kind, "allow");
   assert.equal(redactSensitiveText("Authorization: Bearer abc123"), "Authorization: Bearer [REDACTED]");
+  assert.equal(redactSensitiveText("API_TOKEN=plain-api-token-value"), "API_TOKEN=[REDACTED]");
 
   const redactedJson = redactSensitiveText(JSON.stringify({
     password: "nested-password",
