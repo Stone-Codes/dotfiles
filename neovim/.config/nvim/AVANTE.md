@@ -12,7 +12,7 @@ Avante is an AI coding sidebar for Neovim. This configuration connects it to the
    ```
 
    Choose **Sign in with ChatGPT** in the browser flow. The status command should report that you are logged in.
-2. Restart Neovim, or run `:Lazy sync`.
+2. Run `:Lazy restore` to use the versions recorded in the lockfile, then restart Neovim.
 3. Press `<Space>aa` to open the Avante sidebar.
 4. Press `<Space>ac` to ask about the current file.
 5. In visual mode, select code and press `<Space>ac` to ask about only that selection.
@@ -72,7 +72,8 @@ The leader key is `<Space>` in this configuration.
 - `:AvanteSwitchProvider` — switch providers
 - `:AvanteModels` — choose an available model when supported
 - `:Lazy` — inspect or manage installed plugins
-- `:Lazy sync` — install/update plugins from the lockfile
+- `:Lazy restore` — restore the plugin versions recorded in the lockfile
+- `:Lazy sync` — install missing plugins, update plugins, and clean unused plugins
 
 ## Recommended workflow
 
@@ -133,7 +134,7 @@ The first launch may take longer while `npx` downloads and caches the adapter. T
 ### Avante does not open
 
 1. Run `:Lazy` and check that `avante.nvim` is installed.
-2. Run `:Lazy sync`.
+2. Run `:Lazy restore`.
 3. Restart Neovim.
 4. Try `:AvanteToggle` directly.
 5. Check `:messages` for Lua/plugin errors.
@@ -174,6 +175,11 @@ Avante is configured not to auto-approve tool permissions. Read the permission p
 Confirm that the Codex/ChatGPT account is the account you intended to use and that the subscription is active. This integration is separate from Avante's direct API-key OpenAI provider.
 
 ## Configuration location
+
+This configuration supports Neovim 0.11.5. Avante is pinned to revision
+`460af39d32f59ad225f1f82acd9158d05dd7c8a7` because newer revisions require Neovim 0.12.
+Tree-sitter is also kept on its legacy `master` branch. Revisit both choices when
+upgrading Neovim; Tree-sitter's `main` branch requires a different setup.
 
 - Plugin setup: `.config/nvim/lua/plugins/plugins.lua`
 - Custom keybindings: `.config/nvim/after/plugin/avante.lua`

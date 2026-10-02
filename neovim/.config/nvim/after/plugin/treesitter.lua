@@ -23,6 +23,5 @@ vim.filetype.add({
   extension = {
     templ = "templ",
     svelte = "svelte", -- Ensure svelte files are recognized
-    tsx = "tsx",       -- Ensure tsx files are recognized
   },
 })

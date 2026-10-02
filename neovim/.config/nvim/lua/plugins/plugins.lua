@@ -17,7 +17,8 @@ return {
   },
   {
     'nvim-treesitter/nvim-treesitter',
-    run = ':TSUpdate'
+    branch = 'master', -- Legacy API used by after/plugin/treesitter.lua (Neovim 0.11).
+    build = ':TSUpdate'
   },
   {
     'ThePrimeagen/harpoon'
@@ -26,12 +27,15 @@ return {
     'mbbill/undotree'
   },
   { 'tpope/vim-fugitive' },
-  { 'williamboman/mason.nvim' },
-  { 'williamboman/mason-lspconfig.nvim' },
+  { 'mason-org/mason.nvim' },
+  { 'mason-org/mason-lspconfig.nvim', dependencies = { 'mason-org/mason.nvim', 'neovim/nvim-lspconfig' } },
 
   { 'VonHeikemen/lsp-zero.nvim',        branch = 'v3.x' },
   { 'neovim/nvim-lspconfig' },
   { 'hrsh7th/cmp-nvim-lsp' },
+  { 'hrsh7th/cmp-buffer' },
+  { 'hrsh7th/cmp-path' },
+  { 'saadparwaiz1/cmp_luasnip', dependencies = { 'L3MON4D3/LuaSnip' } },
   { 'hrsh7th/nvim-cmp' },
   { 'L3MON4D3/LuaSnip' },
   {
@@ -86,6 +90,8 @@ return {
     'yetone/avante.nvim',
     event = 'VeryLazy',
     version = false,
+    -- Newer Avante revisions require Neovim 0.12; keep this compatible with 0.11.
+    commit = '460af39d32f59ad225f1f82acd9158d05dd7c8a7',
     opts = {
       mode = 'agentic',
       provider = 'codex',

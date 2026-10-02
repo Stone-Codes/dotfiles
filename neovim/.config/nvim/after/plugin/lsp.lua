@@ -1,291 +1,169 @@
--- Updated lsp.lua with better Python and Svelte support
+-- Neovim 0.11+ and mason-lspconfig v2 use vim.lsp.config directly.
 local lsp = require("lsp-zero")
+local cmp = require("cmp")
 
-lsp.preset("recommended")
-
--- Check Neovim version for API compatibility
-local nvim_version = vim.version()
-local use_new_api = nvim_version.major > 0 or (nvim_version.major == 0 and nvim_version.minor >= 11)
-
--- Helper function to setup LSP servers compatibly
-local function setup_lsp_server(server_name, config)
-  if use_new_api then
-    -- Neovim 0.11+ uses vim.lsp.config
-    vim.lsp.config(server_name, config)
-  else
-    -- Older versions use lspconfig
-    local lspconfig = require("lspconfig")
-    lspconfig[server_name].setup(config)
-  end
-end
-
--- Mason setup for package management
-require('mason').setup({})
-require('mason-lspconfig').setup({
-  ensure_installed = {
-    'pyright', 'ruff', 'lua_ls', 'svelte', 'tailwindcss',
-    'gopls', 'templ', 'jsonls', 'eslint', "ts_ls",
-  },
-  handlers = {
-    -- Default handler for servers without specific configuration
-    function(server_name)
-      setup_lsp_server(server_name, {})
-    end,
-
-    -- Python-specific LSP setups
-    ["pyright"] = function()
-      setup_lsp_server("pyright", {
-        settings = {
-          pyright = {
-            -- Keep organize imports disabled as Ruff will handle this
-            disableOrganizeImports = true,
-          },
-          python = {
-            analysis = {
-              -- Enable type checking
-              typeCheckingMode = "basic", -- Can be "off", "basic", or "strict"
-              autoSearchPaths = true,
-              useLibraryCodeForTypes = true,
-              diagnosticMode = "workspace",
-            },
-          },
-        }
-      })
-    end,
-
-    ["ruff"] = function()
-      setup_lsp_server("ruff", {
-        -- Enable Ruff to provide hover information for diagnostics
-        on_attach = function(client, bufnr)
-          -- Enable hover now so you get useful information
-          client.server_capabilities.hoverProvider = true
-
-          -- Add specific keybinding for formatting with Ruff
-          vim.keymap.set("n", "<leader>rf", function()
-            vim.cmd("RuffFormat")
-          end, { buffer = bufnr, desc = "Format with Ruff" })
-        end,
-
-        settings = {
-          -- Configure Ruff settings
-          ruff = {
-            format = {
-              -- Automatically format on save
-              enabled = true,
-            },
-            lint = {
-              -- Enable all recommended rules by default
-              run = "onSave",
-              -- You can select specific rule sets to enable/disable
-              -- Select rules that cover flake8, isort, pyupgrade, etc.
-              -- See https://beta.ruff.rs/docs/rules/
-              select = {
-                "E", "F", "I", "W", "UP", "N", "B", "A", "C4", "PT", "RET", "SIM"
-              },
-              -- Rules to explicitly ignore
-              ignore = {},
-            },
-            -- Line length matches your colorcolumn setting
-            lineLenght = 80,
-          }
-        }
-      })
-    end,
-
-    -- Enhanced Svelte Configuration
-    ["svelte"] = function()
-      setup_lsp_server("svelte", {
-        on_attach = function(client, bufnr)
-          -- Keep existing JS/TS file change notification
-          vim.api.nvim_create_autocmd("BufWritePost", {
-            pattern = { "*.js", "*.ts" },
-            callback = function(ctx)
-              client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.file })
-            end,
-          })
-
-          -- Enhance completions for HTML parts
-          client.server_capabilities.completionProvider = {
-            triggerCharacters = {
-              ".", ":", "<", "\"", "'", "/", "@", "*",
-              "#", "$", "+", "^", "(", "[", "-", "_"
-            }
-          }
-
-          -- Optional: Add keybinding for manually triggering completion
-          vim.keymap.set("i", "<C-Space>", function()
-            vim.lsp.buf.completion()
-          end, { buffer = bufnr, noremap = true, silent = true })
-        end,
-        settings = {
-          svelte = {
-            plugin = {
-              html = { completions = { enable = true, emmet = true } },
-              svelte = { completions = { enable = true } },
-              css = { completions = { enable = true, emmet = true } }
-            }
-          }
-        }
-      })
-    end,
-
-    -- Keep your other server configurations
-    ["tailwindcss"] = function()
-      local tailwind_config = {
-        lint = {
-          unknownAtRules = "ignore",
-        },
-      }
-      
-      -- Set root_dir based on API version
-      if use_new_api then
-        tailwind_config.root_dir = function(fname)
-          return vim.fs.root(fname, "tailwind.config.js")
-        end
-      else
-        tailwind_config.root_dir = require("lspconfig").util.root_pattern("tailwind.config.js")
-      end
-      
-      setup_lsp_server("tailwindcss", tailwind_config)
-    end,
-  }
+vim.lsp.config("*", {
+  capabilities = require("cmp_nvim_lsp").default_capabilities(),
 })
 
--- Configure EFM for general formatting support
-local efm_config = {}
+vim.lsp.config("pyright", {
+  settings = {
+    pyright = { disableOrganizeImports = true },
+    python = {
+      analysis = {
+        typeCheckingMode = "basic",
+        autoSearchPaths = true,
+        useLibraryCodeForTypes = true,
+        diagnosticMode = "workspace",
+      },
+    },
+  },
+})
 
-if use_new_api then
-  efm_config.root_dir = function(fname)
-    return vim.fs.root(fname, { ".git", "pnpm-workspace.yml" })
+vim.lsp.config("ruff", {
+  init_options = {
+    settings = {
+      lineLength = 80,
+      lint = {
+        select = { "E", "F", "I", "W", "UP", "N", "B", "A", "C4", "PT", "RET", "SIM" },
+        ignore = {},
+      },
+    },
+  },
+  on_attach = function(client, bufnr)
+    -- Pyright provides Python hover; Ruff handles linting and formatting.
+    client.server_capabilities.hoverProvider = false
+    vim.keymap.set("n", "<leader>rf", function()
+      vim.lsp.buf.format({ bufnr = bufnr, name = "ruff", timeout_ms = 2000 })
+    end, { buffer = bufnr, desc = "Format with Ruff" })
+  end,
+})
+
+vim.lsp.config("svelte", {
+  settings = {
+    svelte = {
+      plugin = {
+        html = { completions = { enable = true, emmet = true } },
+        svelte = { completions = { enable = true } },
+        css = { completions = { enable = true, emmet = true } },
+      },
+    },
+  },
+})
+-- Keep nvim-lspconfig's Svelte change notifications and Tailwind root detection.
+
+-- Use the same formatter selection for manual formatting and format on save.
+local function format_buffer(bufnr)
+  local function use_formatter(client)
+    return vim.bo[bufnr].filetype ~= "python" or client.name == "ruff"
   end
-else
-  efm_config.root_dir = require('lspconfig/util').root_pattern(".git", "pnpm-workspace.yml")
+  local clients = vim.lsp.get_clients({ bufnr = bufnr, method = "textDocument/formatting" })
+  if not vim.iter(clients):any(use_formatter) then
+    return
+  end
+  vim.lsp.buf.format({ bufnr = bufnr, filter = use_formatter, timeout_ms = 2000 })
 end
 
-setup_lsp_server("efm", efm_config)
+vim.keymap.set("n", "<leader>f", function()
+  format_buffer(vim.api.nvim_get_current_buf())
+end, { desc = "Format buffer" })
 
--- Format on save setup
-local augroup = vim.api.nvim_create_augroup('LspFormatting', {})
-local lsp_format_on_save = function(bufnr)
-  vim.api.nvim_clear_autocmds({ group = augroup, buffer = bufnr })
-  vim.api.nvim_create_autocmd('BufWritePre', {
-    group = augroup,
+local formatting_group = vim.api.nvim_create_augroup("LspFormatting", { clear = true })
+local function format_on_save(bufnr)
+  vim.api.nvim_clear_autocmds({ group = formatting_group, buffer = bufnr })
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    group = formatting_group,
     buffer = bufnr,
-    callback = function()
-      -- Format the current buffer using the attached LSP
-      vim.lsp.buf.format({
-        -- Filter formatting to only use certain servers
-        filter = function(client)
-          -- For Python files, prefer Ruff for formatting
-          if vim.bo.filetype == "python" then
-            return client.name == "ruff"
-          end
-          -- For other files, use any formatter
-          return true
-        end,
-        bufnr = bufnr,
-      })
-    end,
+    callback = function() format_buffer(bufnr) end,
   })
 end
 
--- Setup autocompletion
-local cmp = require('cmp')
-local cmp_action = require('lsp-zero').cmp_action()
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
-
--- Consolidated CMP setup (fixing the issue of two separate setups)
 cmp.setup({
+  snippet = {
+    expand = function(args) require("luasnip").lsp_expand(args.body) end,
+  },
   window = {
     completion = cmp.config.window.bordered(),
-    documentation = cmp.config.window.bordered()
+    documentation = cmp.config.window.bordered(),
   },
   sources = {
-    { name = 'nvim_lsp' },
-    { name = 'supermaven' }, -- Add Supermaven source
-    { name = 'luasnip' },    -- Add snippet support (if you have luasnip installed)
-    { name = 'buffer' },     -- Add buffer source for more completions
-    { name = 'path' }        -- Add path source for file path completions
+    { name = "nvim_lsp" },
+    { name = "luasnip" },
+    { name = "buffer" },
+    { name = "path" },
   },
   mapping = cmp.mapping.preset.insert({
-    ['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
-    ['<C-n>'] = cmp.mapping.select_next_item(cmp_select),
-    ['<C-y>'] = cmp.mapping.confirm({ select = true }),
+    ["<C-p>"] = cmp.mapping.select_prev_item(cmp_select),
+    ["<C-n>"] = cmp.mapping.select_next_item(cmp_select),
+    ["<C-y>"] = cmp.mapping.confirm({ select = true }),
     ["<C-Space>"] = cmp.mapping.complete(),
-  })
+  }),
 })
 
-lsp.set_preferences({
-  suggest_lsp_servers = false,
-  sign_icons = {
-    error = 'E',
-    warn = 'W',
-    hint = 'H',
-    info = 'I'
-  }
-})
-
-lsp.on_attach(function(client, bufnr)
+lsp.on_attach(function(_, bufnr)
   local opts = { buffer = bufnr, remap = false }
+  format_on_save(bufnr)
 
-  -- Enable document formatting if the client supports it
-  client.server_capabilities.documentFormattingProvider = true
-
-  -- Setup format on save
-  lsp_format_on_save(bufnr)
-
-  -- LSP keybindings
-  vim.keymap.set("n", "gd", function() vim.lsp.buf.definition() end, opts)
-  vim.keymap.set("n", "gD", function() vim.lsp.buf.declaration() end, opts)
-  vim.keymap.set("n", "gt", function() vim.lsp.buf.type_definition() end, opts)
-  vim.keymap.set("n", "gi", function() vim.lsp.buf.implementation() end, opts)
-  vim.keymap.set("n", "K", function() vim.lsp.buf.hover() end, opts)
-  vim.keymap.set("n", "<leader>vws", function() vim.lsp.buf.workspace_symbol() end, opts)
-  vim.keymap.set("n", "<leader>vd", function() vim.diagnostic.open_float() end, opts)
-  vim.keymap.set("n", "L", function() 
+  vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+  vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
+  vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
+  vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
+  vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+  vim.keymap.set("n", "<leader>vws", vim.lsp.buf.workspace_symbol, opts)
+  vim.keymap.set("n", "<leader>vd", vim.diagnostic.open_float, opts)
+  vim.keymap.set("n", "L", function()
     vim.diagnostic.open_float(nil, {
-      border = 'rounded',
-      source = 'always',
-      prefix = ' ',
-      scope = 'cursor',
+      border = "rounded",
+      source = "always",
+      prefix = " ",
+      scope = "cursor",
     })
   end, opts)
-  vim.keymap.set("n", "[d", function() vim.diagnostic.goto_next() end, opts)
-  vim.keymap.set("n", "]d", function() vim.diagnostic.goto_prev() end, opts)
-  vim.keymap.set("n", "<leader>vca", function() vim.lsp.buf.code_action() end, opts)
-  vim.keymap.set("n", "<leader>vrr", function() vim.lsp.buf.references() end, opts)
-  vim.keymap.set("n", "<leader>vrn", function() vim.lsp.buf.rename() end, opts)
-  vim.keymap.set("i", "<C-h>", function() vim.lsp.buf.signature_help() end, opts)
+  vim.keymap.set("n", "[d", function() vim.diagnostic.jump({ count = -1 }) end, opts)
+  vim.keymap.set("n", "]d", function() vim.diagnostic.jump({ count = 1 }) end, opts)
+  vim.keymap.set("n", "<leader>vca", vim.lsp.buf.code_action, opts)
+  vim.keymap.set("n", "<leader>vrr", vim.lsp.buf.references, opts)
+  vim.keymap.set("n", "<leader>vrn", vim.lsp.buf.rename, opts)
+  vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
 end)
 
-lsp.setup()
-
--- Configure diagnostics display with enhanced settings
-vim.diagnostic.config({
-  virtual_text = {
-    prefix = '●',
-    spacing = 4,
-    severity_sort = true,
+-- Enable installed servers only after their settings and attach hooks are ready.
+require("mason").setup({})
+require("mason-lspconfig").setup({
+  ensure_installed = {
+    "pyright", "ruff", "lua_ls", "svelte", "tailwindcss",
+    "gopls", "templ", "jsonls", "eslint", "ts_ls",
   },
-  signs = true,
+})
+
+vim.diagnostic.config({
+  virtual_text = { prefix = "●", spacing = 4 },
+  signs = {
+    text = {
+      [vim.diagnostic.severity.ERROR] = "✘",
+      [vim.diagnostic.severity.WARN] = "▲",
+      [vim.diagnostic.severity.HINT] = "⚑",
+      [vim.diagnostic.severity.INFO] = "»",
+    },
+    numhl = {
+      [vim.diagnostic.severity.ERROR] = "DiagnosticSignError",
+      [vim.diagnostic.severity.WARN] = "DiagnosticSignWarn",
+      [vim.diagnostic.severity.HINT] = "DiagnosticSignHint",
+      [vim.diagnostic.severity.INFO] = "DiagnosticSignInfo",
+    },
+  },
   underline = true,
   update_in_insert = false,
   severity_sort = true,
   float = {
-    border = 'rounded',
-    source = 'always',
-    header = '',
-    prefix = '',
+    border = "rounded",
+    source = "always",
+    header = "",
+    prefix = "",
     focusable = false,
   },
 })
-
--- Define diagnostic signs with icons
-local signs = { Error = "✘", Warn = "▲", Hint = "⚑", Info = "»" }
-for type, icon in pairs(signs) do
-  local hl = "DiagnosticSign" .. type
-  vim.fn.sign_define(hl, { text = icon, texthl = hl, numhl = hl })
-end
 
 -- Configure diagnostic highlight colors
 vim.api.nvim_set_hl(0, 'DiagnosticError', { fg = '#db4b4b', bold = true })
